@@ -1,0 +1,6 @@
+# Tauri dev files
+.tauri.pid
+.tauri.log
+
+# Output files
+video_output/

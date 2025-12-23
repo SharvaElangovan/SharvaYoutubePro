@@ -1,0 +1,71 @@
+use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use std::fs;
+use std::sync::Arc;
+use tauri::Manager;
+use tokio::sync::Mutex;
+
+mod db;
+mod youtube;
+
+use youtube::{OAuthState, SharedOAuthState};
+
+async fn init_database(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
+    fs::create_dir_all(app_data_dir).expect("Failed to create app data directory");
+
+    let db_path = app_data_dir.join("sharva_youtube_pro.db");
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await?;
+
+    // Run migrations
+    db::run_migrations(&pool).await?;
+
+    Ok(pool)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data directory");
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::block_on(async move {
+                match init_database(&app_data_dir).await {
+                    Ok(pool) => {
+                        handle.manage(pool);
+                        handle.manage::<SharedOAuthState>(Arc::new(Mutex::new(OAuthState::default())));
+                        log::info!("Database initialized successfully");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to initialize database: {}", e);
+                    }
+                }
+            });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            youtube::get_youtube_settings,
+            youtube::save_youtube_settings,
+            youtube::authenticate_youtube,
+            youtube::disconnect_youtube,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
