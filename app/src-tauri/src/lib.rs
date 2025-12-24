@@ -50,14 +50,18 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 match init_database(&app_data_dir).await {
                     Ok(pool) => {
-                        // Set global pool for automation
+                        // Set global pool for automation FIRST
                         videos::set_global_pool(pool.clone());
+                        println!("Global pool set for automation");
                         handle.manage(pool);
                         handle.manage::<SharedOAuthState>(Arc::new(Mutex::new(OAuthState::default())));
+                        println!("Database initialized successfully");
                         log::info!("Database initialized successfully");
                     }
                     Err(e) => {
+                        println!("CRITICAL: Failed to initialize database: {}", e);
                         log::error!("Failed to initialize database: {}", e);
+                        panic!("Database initialization failed: {}", e);
                     }
                 }
             });
