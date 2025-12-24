@@ -399,6 +399,15 @@ static VIDEOS_GENERATED: AtomicU32 = AtomicU32::new(0);
 static VIDEOS_UPLOADED: AtomicU32 = AtomicU32::new(0);
 static CURRENT_ACTION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static GLOBAL_POOL: Lazy<Mutex<Option<SqlitePool>>> = Lazy::new(|| Mutex::new(None));
+
+pub fn set_global_pool(pool: SqlitePool) {
+    *GLOBAL_POOL.lock().unwrap() = Some(pool);
+}
+
+fn get_global_pool() -> Option<SqlitePool> {
+    GLOBAL_POOL.lock().unwrap().clone()
+}
 
 #[tauri::command]
 pub async fn get_automation_status() -> AutomationStatus {
@@ -420,7 +429,6 @@ pub async fn stop_automation() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn start_automation(
-    pool: State<'_, SqlitePool>,
     config: GeneratorConfig,
     num_videos: u32,
 ) -> Result<String, String> {
@@ -428,12 +436,13 @@ pub async fn start_automation(
         return Err("Automation already running".to_string());
     }
 
+    let pool_clone = get_global_pool()
+        .ok_or("Database not initialized")?;
+
     AUTOMATION_RUNNING.store(true, Ordering::SeqCst);
     VIDEOS_GENERATED.store(0, Ordering::SeqCst);
     VIDEOS_UPLOADED.store(0, Ordering::SeqCst);
     *LAST_ERROR.lock().unwrap() = None;
-
-    let pool_clone = pool.inner().clone();
 
     // Spawn automation task
     tokio::spawn(async move {

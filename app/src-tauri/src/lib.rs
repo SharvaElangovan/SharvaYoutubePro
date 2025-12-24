@@ -50,6 +50,8 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 match init_database(&app_data_dir).await {
                     Ok(pool) => {
+                        // Set global pool for automation
+                        videos::set_global_pool(pool.clone());
                         handle.manage(pool);
                         handle.manage::<SharedOAuthState>(Arc::new(Mutex::new(OAuthState::default())));
                         log::info!("Database initialized successfully");
