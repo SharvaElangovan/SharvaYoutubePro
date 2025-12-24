@@ -45,6 +45,11 @@ pub async fn get_setting(pool: &SqlitePool, key: &str) -> Option<String> {
         .flatten()
 }
 
+// Alias for use in automation (same function, just for clarity)
+pub async fn get_setting_internal(pool: &SqlitePool, key: &str) -> Option<String> {
+    get_setting(pool, key).await
+}
+
 pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",

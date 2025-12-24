@@ -16,6 +16,14 @@ interface GeneratorConfig {
   outputFilename?: string;
 }
 
+interface AutomationStatus {
+  running: boolean;
+  videos_generated: number;
+  videos_uploaded: number;
+  current_action: string;
+  last_error: string | null;
+}
+
 const VIDEO_TYPES = [
   {
     id: "general_knowledge",
@@ -48,6 +56,9 @@ export default function Videos() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [showAutomation, setShowAutomation] = useState(false);
+  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
+  const [numVideosToGenerate, setNumVideosToGenerate] = useState(10);
   const [message, setMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -63,7 +74,42 @@ export default function Videos() {
 
   useEffect(() => {
     loadVideos();
+    // Poll automation status
+    const interval = setInterval(async () => {
+      try {
+        const status = await invoke<AutomationStatus>("get_automation_status");
+        setAutomationStatus(status);
+        if (status.running) {
+          loadVideos(); // Refresh video list while automation runs
+        }
+      } catch (e) {
+        console.error("Failed to get automation status:", e);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
   }, []);
+
+  const startAutomation = async () => {
+    try {
+      await invoke("start_automation", {
+        config: generatorConfig,
+        numVideos: numVideosToGenerate,
+      });
+      setMessage({ type: "success", text: "Automation started!" });
+      setShowAutomation(false);
+    } catch (error) {
+      setMessage({ type: "error", text: `Failed to start: ${error}` });
+    }
+  };
+
+  const stopAutomation = async () => {
+    try {
+      await invoke("stop_automation");
+      setMessage({ type: "success", text: "Automation stopped" });
+    } catch (error) {
+      setMessage({ type: "error", text: `Failed to stop: ${error}` });
+    }
+  };
 
   const loadVideos = async () => {
     setLoading(true);
@@ -144,8 +190,49 @@ export default function Videos() {
           >
             <span>➕</span> Generate Video
           </button>
+          {automationStatus?.running ? (
+            <button
+              onClick={stopAutomation}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center gap-2"
+            >
+              <span>⏹️</span> Stop Automation
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowAutomation(true)}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors flex items-center gap-2"
+            >
+              <span>🤖</span> Auto Generate
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Automation Status Bar */}
+      {automationStatus?.running && (
+        <div className="mb-6 p-4 bg-green-500/20 border border-green-500 rounded-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="animate-spin text-2xl">🔄</div>
+              <div>
+                <p className="text-green-200 font-medium">{automationStatus.current_action}</p>
+                <p className="text-green-300 text-sm">
+                  Generated: {automationStatus.videos_generated} | Uploaded: {automationStatus.videos_uploaded}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={stopAutomation}
+              className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm"
+            >
+              Stop
+            </button>
+          </div>
+          {automationStatus.last_error && (
+            <p className="mt-2 text-red-300 text-sm">Last error: {automationStatus.last_error}</p>
+          )}
+        </div>
+      )}
 
       {message && (
         <div
@@ -287,6 +374,80 @@ export default function Videos() {
                   className="flex-1 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
                 >
                   {generating ? "Generating..." : "Generate"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Automation Modal */}
+      {showAutomation && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 rounded-2xl p-6 max-w-lg w-full mx-4 border border-white/20">
+            <h2 className="text-xl font-bold text-white mb-4">
+              🤖 Auto Generate & Upload
+            </h2>
+
+            <div className="space-y-4">
+              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+                <p className="text-green-200 text-sm">
+                  This will automatically generate videos and upload them to YouTube.
+                  Each video uses unique questions that won't repeat.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Number of Videos to Generate
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={numVideosToGenerate}
+                  onChange={(e) => setNumVideosToGenerate(parseInt(e.target.value) || 10)}
+                  className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Questions per Video
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="500"
+                  value={generatorConfig.numQuestions || 100}
+                  onChange={(e) =>
+                    setGeneratorConfig((c) => ({
+                      ...c,
+                      numQuestions: parseInt(e.target.value) || 100,
+                    }))
+                  }
+                  className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
+                />
+              </div>
+
+              <div className="bg-slate-700/50 rounded-lg p-3">
+                <p className="text-slate-300 text-sm">
+                  Total questions needed: <strong>{numVideosToGenerate * (generatorConfig.numQuestions || 100)}</strong>
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={() => setShowAutomation(false)}
+                  className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={startAutomation}
+                  className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                >
+                  🚀 Start Automation
                 </button>
               </div>
             </div>

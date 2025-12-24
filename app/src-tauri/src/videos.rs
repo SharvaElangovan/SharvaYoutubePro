@@ -131,11 +131,10 @@ pub async fn generate_video(config: GeneratorConfig) -> Result<String, String> {
             let q_time = config.question_time.unwrap_or(5);
             let a_time = config.answer_time.unwrap_or(3);
 
-            // Fetch questions from our SQLite database
+            // Fetch UNUSED questions from our SQLite database and mark them as used
             format!(r#"
 import sys
 import sqlite3
-import random
 sys.path.insert(0, '{}')
 from generators import GeneralKnowledgeGenerator
 
@@ -144,34 +143,58 @@ db_path = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.d
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
-# Fetch random questions from question_bank
+# Fetch UNUSED questions (times_used = 0), prioritize them
 cursor.execute('''
-    SELECT question, option_a, option_b, option_c, option_d, correct_answer
+    SELECT id, question, option_a, option_b, option_c, option_d, correct_answer
     FROM question_bank
+    WHERE times_used = 0
     ORDER BY RANDOM()
     LIMIT {}
 ''')
 rows = cursor.fetchall()
+
+# If not enough unused, get some used ones too
+if len(rows) < {}:
+    cursor.execute('''
+        SELECT id, question, option_a, option_b, option_c, option_d, correct_answer
+        FROM question_bank
+        WHERE times_used > 0
+        ORDER BY times_used ASC, RANDOM()
+        LIMIT {}
+    ''', ({} - len(rows),))
+    rows.extend(cursor.fetchall())
+
+# Mark these questions as used
+question_ids = [row[0] for row in rows]
+if question_ids:
+    placeholders = ','.join('?' * len(question_ids))
+    cursor.execute(f'''
+        UPDATE question_bank
+        SET times_used = times_used + 1
+        WHERE id IN ({{placeholders}})
+    ''', question_ids)
+    conn.commit()
+
 conn.close()
 
 # Convert to generator format
 questions = []
 for row in rows:
-    q_text, opt_a, opt_b, opt_c, opt_d, correct = row
+    q_id, q_text, opt_a, opt_b, opt_c, opt_d, correct = row
     questions.append({{
         'question': q_text,
         'options': [opt_a, opt_b, opt_c, opt_d],
         'answer': correct
     }})
 
-print(f'Loaded {{len(questions)}} questions from database')
+print(f'Loaded {{len(questions)}} questions (marked as used)')
 
 generator = GeneralKnowledgeGenerator()
 generator.question_time = {}
 generator.answer_time = {}
 output = generator.generate(questions, '{}')
 print(output)
-"#, VIDEO_GENERATOR_PATH, num_q, q_time, a_time, output_filename)
+"#, VIDEO_GENERATOR_PATH, num_q, num_q, num_q, num_q, q_time, a_time, output_filename)
         },
         "spot_difference" => {
             format!(r#"
@@ -354,6 +377,199 @@ pub async fn upload_to_youtube(
         .json()
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    Ok(response_data.id)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomationStatus {
+    pub running: bool,
+    pub videos_generated: u32,
+    pub videos_uploaded: u32,
+    pub current_action: String,
+    pub last_error: Option<String>,
+}
+
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+static AUTOMATION_RUNNING: AtomicBool = AtomicBool::new(false);
+static VIDEOS_GENERATED: AtomicU32 = AtomicU32::new(0);
+static VIDEOS_UPLOADED: AtomicU32 = AtomicU32::new(0);
+static CURRENT_ACTION: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+#[tauri::command]
+pub async fn get_automation_status() -> AutomationStatus {
+    AutomationStatus {
+        running: AUTOMATION_RUNNING.load(Ordering::SeqCst),
+        videos_generated: VIDEOS_GENERATED.load(Ordering::SeqCst),
+        videos_uploaded: VIDEOS_UPLOADED.load(Ordering::SeqCst),
+        current_action: CURRENT_ACTION.lock().unwrap().clone(),
+        last_error: LAST_ERROR.lock().unwrap().clone(),
+    }
+}
+
+#[tauri::command]
+pub async fn stop_automation() -> Result<(), String> {
+    AUTOMATION_RUNNING.store(false, Ordering::SeqCst);
+    *CURRENT_ACTION.lock().unwrap() = "Stopped".to_string();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_automation(
+    pool: State<'_, SqlitePool>,
+    config: GeneratorConfig,
+    num_videos: u32,
+) -> Result<String, String> {
+    if AUTOMATION_RUNNING.load(Ordering::SeqCst) {
+        return Err("Automation already running".to_string());
+    }
+
+    AUTOMATION_RUNNING.store(true, Ordering::SeqCst);
+    VIDEOS_GENERATED.store(0, Ordering::SeqCst);
+    VIDEOS_UPLOADED.store(0, Ordering::SeqCst);
+    *LAST_ERROR.lock().unwrap() = None;
+
+    let pool_clone = pool.inner().clone();
+
+    // Spawn automation task
+    tokio::spawn(async move {
+        for i in 1..=num_videos {
+            if !AUTOMATION_RUNNING.load(Ordering::SeqCst) {
+                break;
+            }
+
+            // Generate video
+            *CURRENT_ACTION.lock().unwrap() = format!("Generating video {}/{}", i, num_videos);
+
+            let gen_config = GeneratorConfig {
+                video_type: config.video_type.clone(),
+                num_questions: config.num_questions,
+                question_time: config.question_time,
+                answer_time: config.answer_time,
+                output_filename: Some(format!("auto_quiz_{}.mp4", chrono::Local::now().format("%Y%m%d_%H%M%S"))),
+            };
+
+            match generate_video(gen_config).await {
+                Ok(video_path) => {
+                    VIDEOS_GENERATED.fetch_add(1, Ordering::SeqCst);
+
+                    // Upload to YouTube
+                    *CURRENT_ACTION.lock().unwrap() = format!("Uploading video {}/{}", i, num_videos);
+
+                    let title = format!("Quiz #{} - Test Your Knowledge!", i);
+                    let description = "General Knowledge Quiz - Can you get all questions right?\n\nSubscribe for more quizzes!\n\n#quiz #trivia #generalknowledge".to_string();
+
+                    match upload_to_youtube_internal(&pool_clone, video_path.clone(), title, description).await {
+                        Ok(video_id) => {
+                            VIDEOS_UPLOADED.fetch_add(1, Ordering::SeqCst);
+                            println!("Uploaded: https://youtube.com/watch?v={}", video_id);
+
+                            // Delete local file after successful upload
+                            let _ = fs::remove_file(&video_path);
+                        }
+                        Err(e) => {
+                            *LAST_ERROR.lock().unwrap() = Some(format!("Upload failed: {}", e));
+                            // Continue to next video even if upload fails
+                        }
+                    }
+                }
+                Err(e) => {
+                    *LAST_ERROR.lock().unwrap() = Some(format!("Generation failed: {}", e));
+                }
+            }
+
+            // Small delay between videos to avoid rate limiting
+            if AUTOMATION_RUNNING.load(Ordering::SeqCst) && i < num_videos {
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        }
+
+        AUTOMATION_RUNNING.store(false, Ordering::SeqCst);
+        *CURRENT_ACTION.lock().unwrap() = "Completed".to_string();
+    });
+
+    Ok("Automation started".to_string())
+}
+
+async fn upload_to_youtube_internal(
+    pool: &SqlitePool,
+    video_path: String,
+    title: String,
+    description: String,
+) -> Result<String, String> {
+    let access_token = crate::youtube::get_setting_internal(pool, "youtube_access_token")
+        .await
+        .ok_or("Not authenticated with YouTube")?;
+
+    let video_data = fs::read(&video_path)
+        .map_err(|e| format!("Failed to read video: {}", e))?;
+
+    let file_size = video_data.len();
+    let client = reqwest::Client::new();
+
+    let metadata = serde_json::json!({
+        "snippet": {
+            "title": title,
+            "description": description,
+            "categoryId": "22",
+            "tags": ["quiz", "trivia", "general knowledge", "brain teaser", "fun"]
+        },
+        "status": {
+            "privacyStatus": "public",
+            "selfDeclaredMadeForKids": false
+        }
+    });
+
+    let init_response = client
+        .post("https://www.googleapis.com/upload/youtube/v3/videos")
+        .query(&[("uploadType", "resumable"), ("part", "snippet,status")])
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Content-Type", "application/json")
+        .header("X-Upload-Content-Length", file_size.to_string())
+        .header("X-Upload-Content-Type", "video/mp4")
+        .json(&metadata)
+        .send()
+        .await
+        .map_err(|e| format!("Init failed: {}", e))?;
+
+    if !init_response.status().is_success() {
+        let error_text = init_response.text().await.unwrap_or_default();
+        return Err(format!("YouTube API error: {}", error_text));
+    }
+
+    let upload_url = init_response
+        .headers()
+        .get("location")
+        .ok_or("No upload URL")?
+        .to_str()
+        .map_err(|_| "Invalid URL")?
+        .to_string();
+
+    let upload_response = client
+        .put(&upload_url)
+        .header("Content-Type", "video/mp4")
+        .header("Content-Length", file_size.to_string())
+        .body(video_data)
+        .send()
+        .await
+        .map_err(|e| format!("Upload failed: {}", e))?;
+
+    if !upload_response.status().is_success() {
+        let error_text = upload_response.text().await.unwrap_or_default();
+        return Err(format!("Upload failed: {}", error_text));
+    }
+
+    #[derive(Deserialize)]
+    struct UploadResponse { id: String }
+
+    let response_data: UploadResponse = upload_response
+        .json()
+        .await
+        .map_err(|e| format!("Parse failed: {}", e))?;
 
     Ok(response_data.id)
 }
