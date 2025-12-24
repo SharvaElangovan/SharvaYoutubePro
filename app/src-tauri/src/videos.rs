@@ -127,18 +127,45 @@ pub async fn generate_video(config: GeneratorConfig) -> Result<String, String> {
     // Create a Python script to generate the video programmatically
     let python_script = match config.video_type.as_str() {
         "general_knowledge" => {
-            let num_q = config.num_questions.unwrap_or(10);
+            let num_q = config.num_questions.unwrap_or(100);
             let q_time = config.question_time.unwrap_or(5);
             let a_time = config.answer_time.unwrap_or(3);
 
+            // Fetch questions from our SQLite database
             format!(r#"
 import sys
+import sqlite3
+import random
 sys.path.insert(0, '{}')
 from generators import GeneralKnowledgeGenerator
-from generators.general_knowledge import SAMPLE_QUESTIONS
-import random
 
-questions = random.sample(SAMPLE_QUESTIONS, min({}, len(SAMPLE_QUESTIONS)))
+# Connect to our question database
+db_path = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db'
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Fetch random questions from question_bank
+cursor.execute('''
+    SELECT question, option_a, option_b, option_c, option_d, correct_answer
+    FROM question_bank
+    ORDER BY RANDOM()
+    LIMIT {}
+''')
+rows = cursor.fetchall()
+conn.close()
+
+# Convert to generator format
+questions = []
+for row in rows:
+    q_text, opt_a, opt_b, opt_c, opt_d, correct = row
+    questions.append({{
+        'question': q_text,
+        'options': [opt_a, opt_b, opt_c, opt_d],
+        'answer': correct
+    }})
+
+print(f'Loaded {{len(questions)}} questions from database')
+
 generator = GeneralKnowledgeGenerator()
 generator.question_time = {}
 generator.answer_time = {}
