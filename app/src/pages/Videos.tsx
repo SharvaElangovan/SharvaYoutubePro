@@ -58,7 +58,7 @@ export default function Videos() {
   const [uploading, setUploading] = useState<string | null>(null);
   const [showAutomation, setShowAutomation] = useState(false);
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
-  const [numVideosToGenerate, setNumVideosToGenerate] = useState(10);
+  const [numVideosToGenerate, setNumVideosToGenerate] = useState(6); // YouTube API limit: 6/day
   const [message, setMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -390,23 +390,23 @@ export default function Videos() {
             </h2>
 
             <div className="space-y-4">
-              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
-                <p className="text-green-200 text-sm">
-                  This will automatically generate videos and upload them to YouTube.
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+                <p className="text-yellow-200 text-sm">
+                  <strong>YouTube API Limit:</strong> 6 videos per day.
                   Each video uses unique questions that won't repeat.
                 </p>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Number of Videos to Generate
+                  Number of Videos (max 6/day)
                 </label>
                 <input
                   type="number"
                   min="1"
-                  max="100"
+                  max="6"
                   value={numVideosToGenerate}
-                  onChange={(e) => setNumVideosToGenerate(parseInt(e.target.value) || 10)}
+                  onChange={(e) => setNumVideosToGenerate(Math.min(6, parseInt(e.target.value) || 1))}
                   className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
                 />
               </div>
