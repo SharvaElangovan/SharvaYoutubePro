@@ -5,6 +5,8 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 mod db;
+mod questions;
+mod videos;
 mod youtube;
 
 use youtube::{OAuthState, SharedOAuthState};
@@ -65,6 +67,19 @@ pub fn run() {
             youtube::save_youtube_settings,
             youtube::authenticate_youtube,
             youtube::disconnect_youtube,
+            videos::list_videos,
+            videos::generate_video,
+            videos::delete_video,
+            videos::upload_to_youtube,
+            questions::get_topics,
+            questions::get_question_stats,
+            questions::get_questions,
+            questions::get_random_questions,
+            questions::add_question,
+            questions::add_questions_bulk,
+            questions::delete_question,
+            questions::add_topic,
+            questions::increment_question_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
