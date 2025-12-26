@@ -155,10 +155,17 @@ def import_jeopardy():
     skipped = 0
     import random
 
+    # Pre-load existing jeopardy questions into memory for fast duplicate checking
+    print("Loading existing questions for dedup...", flush=True)
+    cur.execute("SELECT question FROM question_bank WHERE source = 'jeopardy'")
+    existing = set(row[0] for row in cur.fetchall())
+    print(f"Found {len(existing):,} existing jeopardy questions in DB")
+
     # Skip header
     for i, line in enumerate(lines[1:], 1):
-        if i % 10000 == 0:
-            print(f"Processing {i:,}/{len(lines):,} (added: {total:,})...", end="\r", flush=True)
+        if i % 50000 == 0:
+            print(f"Processing {i:,}/{len(lines):,} (added: {total:,})...")
+            conn.commit()
 
         try:
             # TSV format: round, clue_value, daily_double_value, category, comments, answer, question, air_date, notes
@@ -185,11 +192,11 @@ def import_jeopardy():
                     topic_id = tid
                     break
 
-            # Check for duplicate
-            cur.execute("SELECT 1 FROM question_bank WHERE question = ?", (question_text,))
-            if cur.fetchone():
+            # Check for duplicate using in-memory set (MUCH faster)
+            if question_text in existing:
                 skipped += 1
                 continue
+            existing.add(question_text)
 
             # Generate plausible wrong answers based on answer type
             wrong_answers = generate_wrong_answers(answer)
@@ -333,8 +340,39 @@ def import_mmlu():
                 total += added
                 print(f"+{added}", end=" ")
             else:
-                # Parquet format - need pandas
-                print("parquet", end=" ")
+                # Parquet format - parse with pandas
+                try:
+                    import pandas as pd
+                    import io
+                    df = pd.read_parquet(io.BytesIO(resp.content))
+                    added = 0
+                    for _, row in df.iterrows():
+                        question_text = str(row.get('question', row.get('input', '')))
+                        if not question_text:
+                            continue
+                        # MMLU has columns: question, choices (list), answer (index)
+                        choices = row.get('choices', [])
+                        if len(choices) < 4:
+                            continue
+                        answer_idx = int(row.get('answer', 0))
+
+                        cur.execute("SELECT 1 FROM question_bank WHERE question = ?", (question_text,))
+                        if cur.fetchone():
+                            continue
+
+                        cur.execute("""
+                            INSERT INTO question_bank
+                            (topic_id, question, option_a, option_b, option_c, option_d, correct_answer, difficulty, source)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (topic_id, question_text, str(choices[0]), str(choices[1]), str(choices[2]), str(choices[3]),
+                              answer_idx, 3, "mmlu"))
+                        added += 1
+
+                    conn.commit()
+                    total += added
+                    print(f"+{added}", end=" ")
+                except Exception as e:
+                    print(f"parquet-err", end=" ")
 
         except Exception as e:
             print(f"err", end=" ")
@@ -1404,6 +1442,12 @@ def import_triviaqa():
         total = 0
         import random
 
+        # Pre-load ALL existing questions into memory for FAST dedup
+        print("  Loading existing questions into memory...", flush=True)
+        cur.execute("SELECT question FROM question_bank")
+        existing = set(row[0][:200] for row in cur.fetchall())
+        print(f"  Loaded {len(existing):,} existing questions into RAM", flush=True)
+
         # Extract from tar.gz
         with tarfile.open(fileobj=io.BytesIO(resp.content), mode='r:gz') as tar:
             for member in tar.getmembers():
@@ -1423,15 +1467,17 @@ def import_triviaqa():
                         if not question_text or not answer or len(answer) > 150:
                             continue
 
+                        # Fast in-memory duplicate check
+                        q_key = question_text[:200]
+                        if q_key in existing:
+                            continue
+                        existing.add(q_key)
+
                         # Generate wrong answers
                         wrong = generate_wrong_answers(answer)
                         options = [answer] + wrong
                         random.shuffle(options)
                         correct_idx = options.index(answer)
-
-                        cur.execute("SELECT 1 FROM question_bank WHERE question = ?", (question_text[:200],))
-                        if cur.fetchone():
-                            continue
 
                         cur.execute("""
                             INSERT INTO question_bank

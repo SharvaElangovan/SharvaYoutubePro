@@ -9,11 +9,13 @@ interface VideoFile {
 }
 
 interface GeneratorConfig {
-  type: "general_knowledge" | "spot_difference" | "odd_one_out" | "emoji_word";
+  type: "general_knowledge" | "spot_difference" | "odd_one_out" | "emoji_word" | "shorts";
   numQuestions?: number;
   questionTime?: number;
   answerTime?: number;
   outputFilename?: string;
+  isShorts?: boolean;
+  resolution?: "1080p" | "4k";
 }
 
 interface AutomationStatus {
@@ -30,6 +32,12 @@ const VIDEO_TYPES = [
     name: "General Knowledge Quiz",
     icon: "🧠",
     description: "Multiple choice quiz with TTS narration",
+  },
+  {
+    id: "shorts",
+    name: "YouTube Shorts",
+    icon: "📱",
+    description: "Vertical 9:16 format, 5 quick questions",
   },
   {
     id: "spot_difference",
@@ -58,7 +66,7 @@ export default function Videos() {
   const [uploading, setUploading] = useState<string | null>(null);
   const [showAutomation, setShowAutomation] = useState(false);
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
-  const [numVideosToGenerate, setNumVideosToGenerate] = useState(6); // YouTube API limit: 6/day
+  const [numVideosToGenerate, setNumVideosToGenerate] = useState(50); // Default batch size
   const [message, setMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -67,9 +75,10 @@ export default function Videos() {
   const [generatorConfig, setGeneratorConfig] = useState<GeneratorConfig>({
     type: "general_knowledge",
     numQuestions: 100,
-    questionTime: 5,
-    answerTime: 3,
+    questionTime: 10,
+    answerTime: 5,
     outputFilename: "",
+    resolution: "1080p",
   });
 
   useEffect(() => {
@@ -390,49 +399,123 @@ export default function Videos() {
             </h2>
 
             <div className="space-y-4">
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-                <p className="text-yellow-200 text-sm">
-                  <strong>YouTube API Limit:</strong> 6 videos per day.
-                  Each video uses unique questions that won't repeat.
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                <p className="text-blue-200 text-sm">
+                  <strong>717K+ questions available!</strong> Each video uses unique questions that won't repeat.
                 </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Number of Videos (max 6/day)
+              {/* Shorts Toggle */}
+              <div className="bg-gradient-to-r from-pink-500/20 to-purple-500/20 border border-pink-500/30 rounded-lg p-4">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">📱</span>
+                    <div>
+                      <p className="text-white font-medium">YouTube Shorts Mode</p>
+                      <p className="text-slate-300 text-sm">Vertical 9:16 format, 5 questions, max 60 seconds</p>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={generatorConfig.isShorts || false}
+                      onChange={(e) =>
+                        setGeneratorConfig((c) => ({
+                          ...c,
+                          isShorts: e.target.checked,
+                          numQuestions: e.target.checked ? 5 : (c.numQuestions || 100),
+                        }))
+                      }
+                      className="sr-only"
+                    />
+                    <div className={`w-14 h-8 rounded-full transition-colors ${
+                      generatorConfig.isShorts ? 'bg-pink-500' : 'bg-slate-600'
+                    }`}>
+                      <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-transform ${
+                        generatorConfig.isShorts ? 'translate-x-7' : 'translate-x-1'
+                      }`} />
+                    </div>
+                  </div>
                 </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="6"
-                  value={numVideosToGenerate}
-                  onChange={(e) => setNumVideosToGenerate(Math.min(6, parseInt(e.target.value) || 1))}
-                  className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
-                />
+              </div>
+
+              {/* Resolution Toggle */}
+              <div className="bg-gradient-to-r from-blue-500/20 to-cyan-500/20 border border-blue-500/30 rounded-lg p-4">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">🖥️</span>
+                    <div>
+                      <p className="text-white font-medium">4K Resolution</p>
+                      <p className="text-slate-300 text-sm">3840x2160 (slower, uses CPU encoding)</p>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={generatorConfig.resolution === "4k"}
+                      onChange={(e) =>
+                        setGeneratorConfig((c) => ({
+                          ...c,
+                          resolution: e.target.checked ? "4k" : "1080p",
+                        }))
+                      }
+                      className="sr-only"
+                    />
+                    <div className={`w-14 h-8 rounded-full transition-colors ${
+                      generatorConfig.resolution === "4k" ? 'bg-blue-500' : 'bg-slate-600'
+                    }`}>
+                      <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-transform ${
+                        generatorConfig.resolution === "4k" ? 'translate-x-7' : 'translate-x-1'
+                      }`} />
+                    </div>
+                  </div>
+                </label>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Questions per Video
+                  Number of Videos
                 </label>
                 <input
-                  type="number"
-                  min="1"
-                  max="500"
-                  value={generatorConfig.numQuestions || 100}
-                  onChange={(e) =>
-                    setGeneratorConfig((c) => ({
-                      ...c,
-                      numQuestions: parseInt(e.target.value) || 100,
-                    }))
-                  }
+                  type="text"
+                  inputMode="numeric"
+                  value={numVideosToGenerate}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    setNumVideosToGenerate(val ? Math.min(500, Math.max(1, parseInt(val))) : 1);
+                  }}
                   className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
                 />
               </div>
+
+              {!generatorConfig.isShorts && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                    Questions per Video
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={generatorConfig.numQuestions || 10}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '');
+                      setGeneratorConfig((c) => ({
+                        ...c,
+                        numQuestions: val ? Math.min(500, Math.max(1, parseInt(val))) : 10,
+                      }));
+                    }}
+                    className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
+                  />
+                </div>
+              )}
 
               <div className="bg-slate-700/50 rounded-lg p-3">
                 <p className="text-slate-300 text-sm">
-                  Total questions needed: <strong>{numVideosToGenerate * (generatorConfig.numQuestions || 100)}</strong>
+                  {generatorConfig.isShorts ? (
+                    <>Shorts: <strong>{numVideosToGenerate} videos × 5 questions = {numVideosToGenerate * 5} questions</strong></>
+                  ) : (
+                    <>Total questions needed: <strong>{numVideosToGenerate * (generatorConfig.numQuestions || 100)}</strong></>
+                  )}
                 </p>
               </div>
 

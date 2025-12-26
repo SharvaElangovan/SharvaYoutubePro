@@ -314,3 +314,55 @@ pub async fn disconnect_youtube(pool: State<'_, SqlitePool>) -> Result<(), Strin
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Refresh the access token using the refresh token
+pub async fn refresh_access_token(pool: &SqlitePool) -> Result<String, String> {
+    let client_id = get_setting(pool, "youtube_client_id")
+        .await
+        .ok_or("Client ID not found")?;
+    let client_secret = get_setting(pool, "youtube_client_secret")
+        .await
+        .ok_or("Client Secret not found")?;
+    let refresh_token = get_setting(pool, "youtube_refresh_token")
+        .await
+        .ok_or("Refresh token not found - please re-authenticate")?;
+
+    let client = reqwest::Client::new();
+
+    let params = [
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("refresh_token", refresh_token.as_str()),
+        ("grant_type", "refresh_token"),
+    ];
+
+    let response = client
+        .post(GOOGLE_TOKEN_URL)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to refresh token: {}", e))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Token refresh failed: {}", error_text));
+    }
+
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        access_token: String,
+    }
+
+    let token_data: TokenResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    // Save the new access token
+    set_setting(pool, "youtube_access_token", &token_data.access_token)
+        .await
+        .map_err(|e| format!("Failed to save new token: {}", e))?;
+
+    log::info!("Successfully refreshed YouTube access token");
+    Ok(token_data.access_token)
+}

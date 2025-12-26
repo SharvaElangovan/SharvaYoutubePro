@@ -19,7 +19,7 @@ pub struct VideoFile {
     pub modified: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct GeneratorConfig {
     #[serde(rename = "type")]
     pub video_type: String,
@@ -31,7 +31,25 @@ pub struct GeneratorConfig {
     pub answer_time: Option<u32>,
     #[serde(rename = "outputFilename")]
     pub output_filename: Option<String>,
+    #[serde(rename = "isShorts", default)]
+    pub is_shorts: bool,
+    #[serde(rename = "resolution", default)]
+    pub resolution: Option<String>,
 }
+
+// SEO-optimized title templates for better YouTube visibility
+const TITLE_TEMPLATES: &[&str] = &[
+    "Can You Pass This Quiz? {} Questions",
+    "Only 1% Can Answer All {} Questions",
+    "Test Your Brain: {} Hard Questions",
+    "IQ Test: {} Questions Only Geniuses Solve",
+    "{} Quiz Questions That Will Blow Your Mind",
+    "How Smart Are You? {} Question Challenge",
+    "Brain Teaser: {} Questions to Test Your Knowledge",
+    "Ultimate Quiz Challenge: {} Questions",
+    "Are You Smarter Than Average? {} Questions",
+    "Trivia Master: {} Question Challenge",
+];
 
 fn format_file_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -128,8 +146,10 @@ pub async fn generate_video(config: GeneratorConfig) -> Result<String, String> {
     let python_script = match config.video_type.as_str() {
         "general_knowledge" => {
             let num_q = config.num_questions.unwrap_or(100);
-            let q_time = config.question_time.unwrap_or(5);
-            let a_time = config.answer_time.unwrap_or(3);
+            let q_time = config.question_time.unwrap_or(10);
+            let a_time = config.answer_time.unwrap_or(5);
+            let is_4k = config.resolution.as_deref() == Some("4k");
+            let (width, height) = if is_4k { (3840, 2160) } else { (1920, 1080) };
 
             // Fetch UNUSED questions from our SQLite database and mark them as used
             format!(r#"
@@ -143,39 +163,99 @@ db_path = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.d
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
-# Fetch UNUSED questions (times_used = 0), prioritize them
+# Fetch UNUSED questions - very strict filters for quality
 cursor.execute('''
     SELECT id, question, option_a, option_b, option_c, option_d, correct_answer
     FROM question_bank
     WHERE times_used = 0
+    AND length(question) BETWEEN 20 AND 150
+    AND length(option_a) BETWEEN 1 AND 80
+    AND length(option_b) BETWEEN 1 AND 80
+    AND length(option_c) BETWEEN 1 AND 80
+    AND length(option_d) BETWEEN 1 AND 80
+    AND question NOT LIKE '%[%]%'
+    AND question NOT LIKE '%http%'
+    AND question NOT LIKE '%<%'
+    AND option_a NOT LIKE '%[%]%'
+    AND option_a NOT LIKE '%Not applicable%'
+    AND option_a NOT LIKE '%Unknown%'
+    AND option_a NOT LIKE '%None of these%'
+    AND option_a NOT LIKE 'A %'
+    AND option_a NOT LIKE 'The %'
+    AND option_a NOT LIKE '%Smith'
+    AND option_b NOT LIKE '%Not applicable%'
+    AND option_b NOT LIKE '%Unknown%'
+    AND option_b NOT LIKE '%None of these%'
+    AND option_b NOT LIKE 'A %'
+    AND option_b NOT LIKE 'The %'
+    AND option_b NOT LIKE '%Smith'
+    AND option_c NOT LIKE '%Not applicable%'
+    AND option_c NOT LIKE '%Unknown%'
+    AND option_c NOT LIKE '%None of these%'
+    AND option_c NOT LIKE 'A %'
+    AND option_c NOT LIKE 'The %'
+    AND option_c NOT LIKE '%Smith'
+    AND option_d NOT LIKE '%Not applicable%'
+    AND option_d NOT LIKE '%Unknown%'
+    AND option_d NOT LIKE '%None of these%'
+    AND option_d NOT LIKE 'A %'
+    AND option_d NOT LIKE 'The %'
+    AND option_d NOT LIKE '%Smith'
+    AND question LIKE '%?%'
+    AND source IN ('opentriviaqa', 'triviaapi', 'opentdb', 'millionaire', 'built-in', 'sciq', 'arc', 'openbookqa', 'mistral')
     ORDER BY RANDOM()
     LIMIT {}
 ''')
 rows = cursor.fetchall()
 
-# If not enough unused, get some used ones too
+# If not enough unused, get some used ones too (with same filters)
 if len(rows) < {}:
     cursor.execute('''
         SELECT id, question, option_a, option_b, option_c, option_d, correct_answer
         FROM question_bank
         WHERE times_used > 0
+        AND length(question) BETWEEN 20 AND 150
+        AND length(option_a) BETWEEN 1 AND 80
+        AND length(option_b) BETWEEN 1 AND 80
+        AND length(option_c) BETWEEN 1 AND 80
+        AND length(option_d) BETWEEN 1 AND 80
+        AND question NOT LIKE '%[%]%'
+        AND question NOT LIKE '%http%'
+        AND question NOT LIKE '%<%'
+        AND option_a NOT LIKE '%[%]%'
+        AND option_a NOT LIKE '%Not applicable%'
+        AND option_a NOT LIKE '%Unknown%'
+        AND option_a NOT LIKE '%None of these%'
+        AND option_a NOT LIKE 'A %'
+        AND option_a NOT LIKE 'The %'
+        AND option_a NOT LIKE '%Smith'
+        AND option_b NOT LIKE '%Not applicable%'
+        AND option_b NOT LIKE '%Unknown%'
+        AND option_b NOT LIKE '%None of these%'
+        AND option_b NOT LIKE 'A %'
+        AND option_b NOT LIKE 'The %'
+        AND option_b NOT LIKE '%Smith'
+        AND option_c NOT LIKE '%Not applicable%'
+        AND option_c NOT LIKE '%Unknown%'
+        AND option_c NOT LIKE '%None of these%'
+        AND option_c NOT LIKE 'A %'
+        AND option_c NOT LIKE 'The %'
+        AND option_c NOT LIKE '%Smith'
+        AND option_d NOT LIKE '%Not applicable%'
+        AND option_d NOT LIKE '%Unknown%'
+        AND option_d NOT LIKE '%None of these%'
+        AND option_d NOT LIKE 'A %'
+        AND option_d NOT LIKE 'The %'
+        AND option_d NOT LIKE '%Smith'
+        AND question LIKE '%?%'
+        AND source IN ('opentriviaqa', 'triviaapi', 'opentdb', 'millionaire', 'built-in', 'sciq', 'arc', 'openbookqa', 'mistral')
         ORDER BY times_used ASC, RANDOM()
         LIMIT {}
     ''', ({} - len(rows),))
     rows.extend(cursor.fetchall())
 
-# Mark these questions as used
+# Keep question IDs for marking as used AFTER successful generation
 question_ids = [row[0] for row in rows]
-if question_ids:
-    placeholders = ','.join('?' * len(question_ids))
-    cursor.execute(f'''
-        UPDATE question_bank
-        SET times_used = times_used + 1
-        WHERE id IN ({{placeholders}})
-    ''', question_ids)
-    conn.commit()
-
-conn.close()
 
 # Convert to generator format
 questions = []
@@ -187,14 +267,35 @@ for row in rows:
         'answer': correct
     }})
 
-print(f'Loaded {{len(questions)}} questions (marked as used)')
+print(f'Loaded {{len(questions)}} questions')
 
-generator = GeneralKnowledgeGenerator()
+generator = GeneralKnowledgeGenerator(width={}, height={})
 generator.question_time = {}
 generator.answer_time = {}
-output = generator.generate(questions, '{}')
+output = generator.generate(questions, '{}', enable_tts=True)
+
+# Only mark questions as used AFTER successful video generation
+import os
+if os.path.exists(output) and os.path.getsize(output) > 1000:
+    if question_ids:
+        placeholders = ','.join('?' * len(question_ids))
+        cursor.execute(f'''
+            UPDATE question_bank
+            SET times_used = times_used + 1
+            WHERE id IN ({{placeholders}})
+        ''', question_ids)
+        conn.commit()
+    print(f'Marked {{len(question_ids)}} questions as used')
+
+conn.close()
+
+# Generate thumbnail
+thumbnail_path = output.replace('.mp4', '_thumb.jpg')
+first_q = questions[0]['question'] if questions else 'Quiz Time!'
+generator.generate_thumbnail(first_q[:50], f'{{len(questions)}} Questions', thumbnail_path)
+print(f'THUMBNAIL:{{thumbnail_path}}')
 print(output)
-"#, VIDEO_GENERATOR_PATH, num_q, num_q, num_q, num_q, q_time, a_time, output_filename)
+"#, VIDEO_GENERATOR_PATH, num_q, num_q, num_q, num_q, width, height, q_time, a_time, output_filename)
         },
         "spot_difference" => {
             format!(r#"
@@ -256,6 +357,106 @@ output = generator.generate(
 )
 print(output)
 "#, VIDEO_GENERATOR_PATH, output_filename)
+        },
+        "shorts" => {
+            let num_q = config.num_questions.unwrap_or(5).min(5); // Max 5 for Shorts
+
+            format!(r#"
+import sys
+import sqlite3
+sys.path.insert(0, '{}')
+from generators import ShortsGenerator
+
+# Connect to our question database
+db_path = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db'
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Fetch UNUSED questions for Shorts - very strict filters
+cursor.execute('''
+    SELECT id, question, option_a, option_b, option_c, option_d, correct_answer
+    FROM question_bank
+    WHERE times_used = 0
+    AND length(question) BETWEEN 20 AND 120
+    AND length(option_a) BETWEEN 1 AND 50
+    AND length(option_b) BETWEEN 1 AND 50
+    AND length(option_c) BETWEEN 1 AND 50
+    AND length(option_d) BETWEEN 1 AND 50
+    AND question NOT LIKE '%[%]%'
+    AND question NOT LIKE '%http%'
+    AND question NOT LIKE '%<%'
+    AND option_a NOT LIKE '%[%]%'
+    AND option_a NOT LIKE '%Not applicable%'
+    AND option_a NOT LIKE '%Unknown%'
+    AND option_a NOT LIKE '%None of these%'
+    AND option_a NOT LIKE 'A %'
+    AND option_a NOT LIKE 'The %'
+    AND option_a NOT LIKE '%Smith'
+    AND option_b NOT LIKE '%Not applicable%'
+    AND option_b NOT LIKE '%Unknown%'
+    AND option_b NOT LIKE '%None of these%'
+    AND option_b NOT LIKE 'A %'
+    AND option_b NOT LIKE 'The %'
+    AND option_b NOT LIKE '%Smith'
+    AND option_c NOT LIKE '%Not applicable%'
+    AND option_c NOT LIKE '%Unknown%'
+    AND option_c NOT LIKE '%None of these%'
+    AND option_c NOT LIKE 'A %'
+    AND option_c NOT LIKE 'The %'
+    AND option_c NOT LIKE '%Smith'
+    AND option_d NOT LIKE '%Not applicable%'
+    AND option_d NOT LIKE '%Unknown%'
+    AND option_d NOT LIKE '%None of these%'
+    AND option_d NOT LIKE 'A %'
+    AND option_d NOT LIKE 'The %'
+    AND option_d NOT LIKE '%Smith'
+    AND question LIKE '%?%'
+    AND source IN ('opentriviaqa', 'triviaapi', 'opentdb', 'millionaire', 'built-in', 'sciq', 'arc', 'openbookqa', 'mistral')
+    ORDER BY RANDOM()
+    LIMIT {}
+''')
+rows = cursor.fetchall()
+
+# Keep question IDs for marking as used AFTER successful generation
+question_ids = [row[0] for row in rows]
+
+# Convert to generator format
+questions = []
+for row in rows:
+    q_id, q_text, opt_a, opt_b, opt_c, opt_d, correct = row
+    questions.append({{
+        'question': q_text,
+        'options': [opt_a, opt_b, opt_c, opt_d],
+        'answer': correct
+    }})
+
+print(f'Generating Shorts with {{len(questions)}} questions')
+
+generator = ShortsGenerator()
+output = generator.generate(questions, '{}', enable_tts=True)
+
+# Only mark questions as used AFTER successful video generation
+import os
+if os.path.exists(output) and os.path.getsize(output) > 1000:
+    if question_ids:
+        placeholders = ','.join('?' * len(question_ids))
+        cursor.execute(f'''
+            UPDATE question_bank
+            SET times_used = times_used + 1
+            WHERE id IN ({{placeholders}})
+        ''', question_ids)
+        conn.commit()
+    print(f'Marked {{len(question_ids)}} questions as used')
+
+conn.close()
+
+# Generate thumbnail for Shorts
+thumbnail_path = output.replace('.mp4', '_thumb.jpg')
+first_q = questions[0]['question'] if questions else 'Quiz Time!'
+generator.generate_thumbnail(first_q, thumbnail_path)
+print(f'THUMBNAIL:{{thumbnail_path}}')
+print(output)
+"#, VIDEO_GENERATOR_PATH, num_q, output_filename)
         },
         _ => return Err(format!("Unknown video type: {}", config.video_type)),
     };
@@ -402,11 +603,15 @@ static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static GLOBAL_POOL: Lazy<Mutex<Option<SqlitePool>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn set_global_pool(pool: SqlitePool) {
+    log::info!("Setting global pool for automation...");
     *GLOBAL_POOL.lock().unwrap() = Some(pool);
+    log::info!("Global pool set successfully!");
 }
 
 fn get_global_pool() -> Option<SqlitePool> {
-    GLOBAL_POOL.lock().unwrap().clone()
+    let pool = GLOBAL_POOL.lock().unwrap().clone();
+    log::info!("get_global_pool called, has_pool: {}", pool.is_some());
+    pool
 }
 
 #[tauri::command]
@@ -454,12 +659,18 @@ pub async fn start_automation(
             // Generate video
             *CURRENT_ACTION.lock().unwrap() = format!("Generating video {}/{}", i, num_videos);
 
+            let is_shorts = config.is_shorts;
+            let num_q = config.num_questions.unwrap_or(if is_shorts { 5 } else { 10 });
+            let prefix = if is_shorts { "short" } else { "auto_quiz" };
+
             let gen_config = GeneratorConfig {
-                video_type: config.video_type.clone(),
-                num_questions: config.num_questions,
+                video_type: if is_shorts { "shorts".to_string() } else { config.video_type.clone() },
+                num_questions: Some(num_q),
                 question_time: config.question_time,
                 answer_time: config.answer_time,
-                output_filename: Some(format!("auto_quiz_{}.mp4", chrono::Local::now().format("%Y%m%d_%H%M%S"))),
+                output_filename: Some(format!("{}_{}.mp4", prefix, chrono::Local::now().format("%Y%m%d_%H%M%S"))),
+                is_shorts,
+                resolution: config.resolution.clone(),
             };
 
             match generate_video(gen_config).await {
@@ -469,13 +680,36 @@ pub async fn start_automation(
                     // Upload to YouTube
                     *CURRENT_ACTION.lock().unwrap() = format!("Uploading video {}/{}", i, num_videos);
 
-                    let title = format!("Quiz #{} - Test Your Knowledge!", i);
-                    let description = "General Knowledge Quiz - Can you get all questions right?\n\nSubscribe for more quizzes!\n\n#quiz #trivia #generalknowledge".to_string();
+                    // Use SEO-optimized title templates
+                    let template_idx = (i as usize - 1) % TITLE_TEMPLATES.len();
+                    let title = TITLE_TEMPLATES[template_idx].replace("{}", &num_q.to_string());
+
+                    let shorts_tag = if is_shorts { " #shorts" } else { "" };
+                    let description = format!(
+                        "🧠 {} Question Quiz - Can you get them all right?\n\n\
+                        👆 Subscribe for daily quizzes!\n\
+                        💬 Comment your score below!\n\n\
+                        #quiz #trivia #generalknowledge #brainteaser #iqtest{}",
+                        num_q, shorts_tag
+                    );
 
                     match upload_to_youtube_internal(&pool_clone, video_path.clone(), title, description).await {
                         Ok(video_id) => {
                             VIDEOS_UPLOADED.fetch_add(1, Ordering::SeqCst);
                             println!("Uploaded: https://youtube.com/watch?v={}", video_id);
+
+                            // Try to upload thumbnail
+                            let thumbnail_path = video_path.replace(".mp4", "_thumb.jpg");
+                            if std::path::Path::new(&thumbnail_path).exists() {
+                                if let Some(token) = crate::youtube::get_setting_internal(&pool_clone, "youtube_access_token").await {
+                                    if let Err(e) = upload_thumbnail(&token, &video_id, &thumbnail_path).await {
+                                        println!("Thumbnail upload failed: {}", e);
+                                    } else {
+                                        println!("Thumbnail uploaded for video {}", video_id);
+                                    }
+                                }
+                                let _ = fs::remove_file(&thumbnail_path);
+                            }
 
                             // Delete local file after successful upload
                             let _ = fs::remove_file(&video_path);
@@ -504,17 +738,67 @@ pub async fn start_automation(
     Ok("Automation started".to_string())
 }
 
+async fn upload_thumbnail(
+    access_token: &str,
+    video_id: &str,
+    thumbnail_path: &str,
+) -> Result<(), String> {
+    let thumbnail_data = fs::read(thumbnail_path)
+        .map_err(|e| format!("Failed to read thumbnail: {}", e))?;
+
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!(
+            "https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={}",
+            video_id
+        ))
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Content-Type", "image/jpeg")
+        .body(thumbnail_data)
+        .send()
+        .await
+        .map_err(|e| format!("Thumbnail upload failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Thumbnail upload failed: {}", error_text));
+    }
+
+    Ok(())
+}
+
 async fn upload_to_youtube_internal(
     pool: &SqlitePool,
     video_path: String,
     title: String,
     description: String,
 ) -> Result<String, String> {
+    // Try upload, refresh token on 401 and retry once
+    match try_upload(pool, &video_path, &title, &description).await {
+        Ok(id) => Ok(id),
+        Err(e) if e.contains("401") || e.contains("UNAUTHENTICATED") || e.contains("Invalid Credentials") => {
+            log::info!("Token expired, attempting refresh...");
+            // Refresh the token
+            crate::youtube::refresh_access_token(pool).await?;
+            // Retry upload with new token
+            try_upload(pool, &video_path, &title, &description).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn try_upload(
+    pool: &SqlitePool,
+    video_path: &str,
+    title: &str,
+    description: &str,
+) -> Result<String, String> {
     let access_token = crate::youtube::get_setting_internal(pool, "youtube_access_token")
         .await
         .ok_or("Not authenticated with YouTube")?;
 
-    let video_data = fs::read(&video_path)
+    let video_data = fs::read(video_path)
         .map_err(|e| format!("Failed to read video: {}", e))?;
 
     let file_size = video_data.len();
