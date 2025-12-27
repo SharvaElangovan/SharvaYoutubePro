@@ -320,11 +320,11 @@ export default function Videos() {
                         type="number"
                         min="3"
                         max="30"
-                        value={generatorConfig.questionTime || 5}
+                        value={generatorConfig.questionTime || 10}
                         onChange={(e) =>
                           setGeneratorConfig((c) => ({
                             ...c,
-                            questionTime: parseInt(e.target.value) || 5,
+                            questionTime: parseInt(e.target.value) || 10,
                           }))
                         }
                         className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
@@ -338,11 +338,11 @@ export default function Videos() {
                         type="number"
                         min="1"
                         max="10"
-                        value={generatorConfig.answerTime || 3}
+                        value={generatorConfig.answerTime || 5}
                         onChange={(e) =>
                           setGeneratorConfig((c) => ({
                             ...c,
-                            answerTime: parseInt(e.target.value) || 3,
+                            answerTime: parseInt(e.target.value) || 5,
                           }))
                         }
                         className="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white"
