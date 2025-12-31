@@ -4,3 +4,37 @@
 
 # Output files
 video_output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Video generator
+video_generator/output/
+video_generator/venv/
+video_generator/__pycache__/
+video_generator/generators/__pycache__/
+video_generator/tts_cache/
+video_generator/piper_models/
+video_generator/sounds/
+video_generator/*.log
+video_generator/ai_generated/
+video_generator/video_queue/
+
+# Logs
+*.log
+question_generator/*.log
+question_generator/__pycache__/
+
+# Media files (too large for git)
+*.mp4
+*.webm
+*.png
+*.jpg
+*.jpeg
+
+# Misc
+.DS_Store

@@ -13,10 +13,11 @@ import time
 from datetime import datetime
 
 # Paths
-VIDEO_GEN_PATH = "/home/sharva/projects/video generator"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+VIDEO_GEN_PATH = os.path.join(SCRIPT_DIR, "video_generator")
 DB_PATH = "/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db"
-OUTPUT_DIR = "/home/sharva/projects/video generator/output"
-LOG_FILE = "/home/sharva/projects/SharvaYoutubePro/daily_upload.log"
+OUTPUT_DIR = os.path.join(VIDEO_GEN_PATH, "output")
+LOG_FILE = os.path.join(SCRIPT_DIR, "daily_upload.log")
 
 sys.path.insert(0, VIDEO_GEN_PATH)
 
