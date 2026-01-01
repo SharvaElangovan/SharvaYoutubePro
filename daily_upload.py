@@ -380,6 +380,51 @@ def upload_video(video_path, title, description, is_short=False):
         log(f"Upload error: {e}")
         return None, "ERROR"
 
+
+def upload_thumbnail(video_id, thumbnail_path):
+    """Upload a custom thumbnail for a video."""
+    import urllib.request
+    import urllib.error
+
+    if not os.path.exists(thumbnail_path):
+        log(f"  Thumbnail not found: {thumbnail_path}")
+        return False
+
+    token = get_oauth_token()
+    if not token:
+        token = refresh_token()
+    if not token:
+        return False
+
+    try:
+        with open(thumbnail_path, 'rb') as f:
+            thumbnail_data = f.read()
+
+        # Determine content type
+        content_type = 'image/jpeg' if thumbnail_path.endswith('.jpg') else 'image/png'
+
+        req = urllib.request.Request(
+            f'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={video_id}',
+            data=thumbnail_data,
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': content_type
+            },
+            method='POST'
+        )
+
+        with urllib.request.urlopen(req) as resp:
+            return True
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        log(f"  Thumbnail upload failed: {e.code} - {error_body[:100]}")
+        return False
+    except Exception as e:
+        log(f"  Thumbnail upload error: {e}")
+        return False
+
+
 def generate_and_upload_shorts(use_themes=True):
     """Generate and upload short-form videos until YouTube limit."""
     from generators import ShortsGenerator
@@ -538,6 +583,7 @@ def generate_one_short(topic_cats, categories, cat_idx):
 
     filename = f"short_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
     output_path = os.path.join(OUTPUT_DIR, filename)
+    thumbnail_path = output_path.replace('.mp4', '_thumb.jpg')
 
     try:
         generator = ShortsGenerator()
@@ -547,15 +593,26 @@ def generate_one_short(topic_cats, categories, cat_idx):
             title = TitleGenerator.generate_shorts_title(5, category=category)
             desc = TitleGenerator.generate_description(5, is_shorts=True, category=category)
 
+            # Generate thumbnail
+            first_question = questions[0].get('question', 'Quiz Time!')[:50]
+            generator.generate_thumbnail(first_question, thumbnail_path)
+
             video_id, error = upload_with_retry(output_path, title, desc, is_short=True)
             os.remove(output_path)
 
             if video_id:
+                # Upload thumbnail
+                if os.path.exists(thumbnail_path):
+                    upload_thumbnail(video_id, thumbnail_path)
+                    os.remove(thumbnail_path)
+
                 mark_used(ids)
                 cat_text = f" ({category})" if category else ""
                 log(f"✓ Short{cat_text}: https://youtube.com/watch?v={video_id}")
                 return True, cat_idx, None
             else:
+                if os.path.exists(thumbnail_path):
+                    os.remove(thumbnail_path)
                 return False, cat_idx, error
         else:
             return False, cat_idx, "GEN_FAILED"
@@ -563,6 +620,8 @@ def generate_one_short(topic_cats, categories, cat_idx):
         log(f"✗ Short error: {e}")
         if os.path.exists(output_path):
             os.remove(output_path)
+        if os.path.exists(thumbnail_path):
+            os.remove(thumbnail_path)
         return False, cat_idx, "ERROR"
 
 
@@ -587,6 +646,7 @@ def generate_one_longform(topic_cats, categories, cat_idx):
 
     filename = f"longform_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
     output_path = os.path.join(OUTPUT_DIR, filename)
+    thumbnail_path = output_path.replace('.mp4', '_thumb.jpg')
 
     try:
         generator = GeneralKnowledgeGenerator(
@@ -599,15 +659,26 @@ def generate_one_longform(topic_cats, categories, cat_idx):
             title = TitleGenerator.generate_longform_title(50, category=category)
             desc = TitleGenerator.generate_description(50, is_shorts=False, category=category)
 
+            # Generate thumbnail
+            cat_text_thumb = f" {category}" if category else ""
+            generator.generate_thumbnail(f"50{cat_text_thumb} Quiz Questions", "Test Your Knowledge!", thumbnail_path)
+
             video_id, error = upload_with_retry(output_path, title, desc, is_short=False)
             os.remove(output_path)
 
             if video_id:
+                # Upload thumbnail
+                if os.path.exists(thumbnail_path):
+                    upload_thumbnail(video_id, thumbnail_path)
+                    os.remove(thumbnail_path)
+
                 mark_used(ids)
                 cat_text = f" ({category})" if category else ""
                 log(f"✓ Longform{cat_text}: https://youtube.com/watch?v={video_id}")
                 return True, cat_idx, None
             else:
+                if os.path.exists(thumbnail_path):
+                    os.remove(thumbnail_path)
                 return False, cat_idx, error
         else:
             return False, cat_idx, "GEN_FAILED"
@@ -615,6 +686,8 @@ def generate_one_longform(topic_cats, categories, cat_idx):
         log(f"✗ Longform error: {e}")
         if os.path.exists(output_path):
             os.remove(output_path)
+        if os.path.exists(thumbnail_path):
+            os.remove(thumbnail_path)
         return False, cat_idx, "ERROR"
 
 
