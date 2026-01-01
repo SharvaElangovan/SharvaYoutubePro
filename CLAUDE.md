@@ -113,3 +113,5 @@ Restore:
 ```bash
 cp ~/Downloads/sharva_youtube_pro.db ~/.local/share/com.sharva.youtube-pro/
 ```
+### dev notes
+always push to git do not wait for my command
