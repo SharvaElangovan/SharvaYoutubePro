@@ -102,13 +102,26 @@ class BaseVideoGenerator:
         return self._system_info
 
     def _get_ffmpeg_path(self):
-        """Get ffmpeg binary path."""
+        """Get ffmpeg binary path. Prefers system ffmpeg for NVENC support."""
         if self._ffmpeg_path is None:
+            import subprocess
+            import shutil
+            # Prefer system ffmpeg (has NVENC support)
+            system_ffmpeg = shutil.which('ffmpeg')
+            if system_ffmpeg:
+                try:
+                    result = subprocess.run([system_ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
+                    if 'h264_nvenc' in result.stdout:
+                        self._ffmpeg_path = system_ffmpeg
+                        return self._ffmpeg_path
+                except:
+                    pass
+            # Fall back to bundled ffmpeg
             try:
                 import imageio_ffmpeg
                 self._ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
             except ImportError:
-                self._ffmpeg_path = 'ffmpeg'
+                self._ffmpeg_path = system_ffmpeg or 'ffmpeg'
         return self._ffmpeg_path
 
     def _get_font(self, size):
