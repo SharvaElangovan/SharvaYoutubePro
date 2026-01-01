@@ -8,8 +8,8 @@ use tokio::process::Command;
 
 use crate::youtube::get_setting;
 
-const VIDEO_GENERATOR_PATH: &str = "/home/sharva/projects/video generator";
-const OUTPUT_PATH: &str = "/home/sharva/projects/video generator/output";
+const VIDEO_GENERATOR_PATH: &str = "/home/sharva/projects/SharvaYoutubePro/video_generator";
+const OUTPUT_PATH: &str = "/home/sharva/projects/SharvaYoutubePro/video_generator/output";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VideoFile {
