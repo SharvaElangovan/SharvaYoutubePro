@@ -1059,59 +1059,145 @@ class ShortsGenerator(BaseVideoGenerator):
 
         return video_path
 
-    def generate_thumbnail(self, question_text, output_path):
-        """Generate an eye-catching, high-contrast thumbnail for the Short."""
-        # Create vibrant gradient background (brighter colors)
-        pixels = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        top_color = (20, 0, 60)      # Deep purple
-        bottom_color = (80, 0, 120)  # Brighter purple
+    def generate_thumbnail(self, question_text, output_path, category=None):
+        """Generate an eye-catching, high-CTR thumbnail for Shorts."""
+        import random
 
+        # Vibrant color schemes - different from longform for variety
+        color_schemes = [
+            {"top": (255, 0, 80), "bottom": (150, 0, 50), "accent": (255, 255, 0), "glow": (255, 100, 150)},    # Hot Pink
+            {"top": (0, 200, 255), "bottom": (0, 80, 150), "accent": (255, 255, 0), "glow": (100, 220, 255)},   # Cyan
+            {"top": (255, 100, 0), "bottom": (180, 50, 0), "accent": (255, 255, 100), "glow": (255, 150, 50)},  # Orange
+            {"top": (120, 0, 255), "bottom": (60, 0, 150), "accent": (0, 255, 255), "glow": (180, 100, 255)},   # Electric Purple
+            {"top": (0, 255, 100), "bottom": (0, 150, 60), "accent": (255, 255, 0), "glow": (100, 255, 150)},   # Neon Green
+            {"top": (255, 50, 50), "bottom": (150, 20, 20), "accent": (255, 215, 0), "glow": (255, 100, 100)},  # Red/Gold
+        ]
+        scheme = random.choice(color_schemes)
+
+        # Category-specific emojis
+        emoji_map = {
+            "geography": ["🌍", "🗺️", "🌎", "🧭"],
+            "science": ["🔬", "🧪", "⚗️", "🔭"],
+            "history": ["📜", "⏳", "🏛️", "👑"],
+            "sports": ["⚽", "🏆", "🎯", "🏀"],
+            "movies": ["🎬", "🎥", "🍿", "🌟"],
+            "music": ["🎵", "🎸", "🎤", "🎹"],
+            "food": ["🍕", "🍔", "🍳", "🍰"],
+            "animals": ["🦁", "🐘", "🦊", "🐬"],
+            "riddles": ["🤔", "💭", "🔮", "✨"],
+        }
+        default_emojis = ["🧠", "❓", "💡", "🤯", "⚡", "🔥"]
+
+        if category and category.lower() in emoji_map:
+            emoji = random.choice(emoji_map[category.lower()])
+        else:
+            emoji = random.choice(default_emojis)
+
+        # Clickbait variations for Shorts
+        hooks = [
+            ("Only 1% Get", "ALL 5 RIGHT! 😱"),
+            ("IMPOSSIBLE", "Quiz Challenge! 🔥"),
+            ("Are You A", "GENIUS? 🧠"),
+            ("99% FAIL", "This Quiz! 💀"),
+            ("Can You", "BEAT THIS? ⚡"),
+            ("Test Your", "IQ NOW! 🎯"),
+        ]
+        hook_top, hook_bottom = random.choice(hooks)
+
+        # Create gradient background
+        pixels = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         for y in range(self.height):
             ratio = y / self.height
-            r = int(top_color[0] * (1 - ratio) + bottom_color[0] * ratio)
-            g = int(top_color[1] * (1 - ratio) + bottom_color[1] * ratio)
-            b = int(top_color[2] * (1 - ratio) + bottom_color[2] * ratio)
+            r = int(scheme["top"][0] * (1 - ratio) + scheme["bottom"][0] * ratio)
+            g = int(scheme["top"][1] * (1 - ratio) + scheme["bottom"][1] * ratio)
+            b = int(scheme["top"][2] * (1 - ratio) + scheme["bottom"][2] * ratio)
             pixels[y, :] = [r, g, b]
 
         frame = Image.fromarray(pixels, 'RGB')
         draw = ImageDraw.Draw(frame)
 
-        # Glowing effect border
-        border_color = (255, 200, 50)  # Gold/yellow
-        draw.rectangle([10, 10, self.width - 10, self.height - 10],
-                      outline=border_color, width=8)
+        # Dynamic background elements - zigzag pattern
+        for i in range(0, self.height, 200):
+            points = []
+            for x in range(0, self.width + 100, 100):
+                y_offset = 50 if (x // 100) % 2 == 0 else -50
+                points.append((x, i + y_offset))
+            if len(points) >= 2:
+                draw.line(points, fill=scheme["glow"], width=3)
 
-        # Big brain emoji with glow effect
-        self.add_text(frame, "🧠", (self.width // 2, 350),
-                     font=self._get_font(280), color=self.text_color)
+        # Glowing border with multiple layers
+        for i, width in enumerate([12, 8, 4]):
+            alpha_color = tuple(min(255, c + i * 30) for c in scheme["accent"])
+            draw.rectangle([15 - i*3, 15 - i*3, self.width - 15 + i*3, self.height - 15 + i*3],
+                          outline=alpha_color, width=width)
 
-        # Bold "QUIZ" with outline effect
-        quiz_y = 720
-        # Shadow/outline
-        for dx, dy in [(-4, -4), (4, -4), (-4, 4), (4, 4)]:
-            self.add_text(frame, "QUIZ", (self.width // 2 + dx, quiz_y + dy),
-                         font=self._get_font(180), color=(0, 0, 0))
+        # Starburst behind emoji
+        center_x, center_y = self.width // 2, 380
+        for angle in range(0, 360, 30):
+            import math
+            end_x = center_x + int(250 * math.cos(math.radians(angle)))
+            end_y = center_y + int(250 * math.sin(math.radians(angle)))
+            draw.line([(center_x, center_y), (end_x, end_y)], fill=scheme["glow"], width=8)
+
+        # Big emoji with glow
+        for offset in range(20, 0, -5):
+            self.add_text(frame, emoji, (self.width // 2, 380),
+                         font=self._get_font(300 + offset), color=scheme["glow"])
+        self.add_text(frame, emoji, (self.width // 2, 380),
+                     font=self._get_font(300), color=(255, 255, 255))
+
+        # "QUIZ" text with heavy outline
+        quiz_y = 750
+        for dx in range(-6, 7, 2):
+            for dy in range(-6, 7, 2):
+                self.add_text(frame, "QUIZ", (self.width // 2 + dx, quiz_y + dy),
+                             font=self._get_font(160), color=(0, 0, 0))
         self.add_text(frame, "QUIZ", (self.width // 2, quiz_y),
-                     font=self._get_font(180), color=(255, 255, 0))  # Bright yellow
+                     font=self._get_font(160), color=scheme["accent"])
 
-        # Clickbait text
-        self.add_text(frame, "Only 1% Can", (self.width // 2, 950),
-                     font=self._get_font(70), color=(255, 100, 100))
-        self.add_text(frame, "Score 5/5! 😱", (self.width // 2, 1050),
-                     font=self._get_font(80), color=(255, 255, 255))
+        # Hook text - top line
+        hook_font_top = self._get_font(75)
+        for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3)]:
+            self.add_text(frame, hook_top, (self.width // 2 + dx, 960 + dy),
+                         font=hook_font_top, color=(0, 0, 0))
+        self.add_text(frame, hook_top, (self.width // 2, 960),
+                     font=hook_font_top, color=(255, 255, 255))
 
-        # Question preview in a box
-        preview = question_text[:40] + "?" if len(question_text) > 40 else question_text
-        box_y = 1200
-        draw.rounded_rectangle([80, box_y - 50, self.width - 80, box_y + 80],
-                              radius=25, fill=(0, 0, 0, 180))
-        self.add_text_wrapped(frame, preview, (self.width // 2, box_y + 15),
-                             max_width=self.width - 180,
-                             font=self._get_font(38), color=(255, 255, 255))
+        # Hook text - bottom line (bigger, more impactful)
+        hook_font_bottom = self._get_font(85)
+        for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3)]:
+            self.add_text(frame, hook_bottom, (self.width // 2 + dx, 1060 + dy),
+                         font=hook_font_bottom, color=(0, 0, 0))
+        self.add_text(frame, hook_bottom, (self.width // 2, 1060),
+                     font=hook_font_bottom, color=scheme["accent"])
 
-        # CTA at bottom
-        self.add_text(frame, "▶ TAP TO PLAY", (self.width // 2, 1450),
-                     font=self._get_font(55), color=(100, 255, 100))
+        # Question preview box with glow
+        preview = question_text[:35] + "...?" if len(question_text) > 35 else question_text
+        box_y = 1220
+        # Glow effect for box
+        for expand in range(10, 0, -2):
+            draw.rounded_rectangle([60 - expand, box_y - 60 - expand,
+                                   self.width - 60 + expand, box_y + 70 + expand],
+                                  radius=30, outline=scheme["glow"])
+        draw.rounded_rectangle([60, box_y - 60, self.width - 60, box_y + 70],
+                              radius=30, fill=(0, 0, 0))
+        self.add_text_wrapped(frame, preview, (self.width // 2, box_y + 5),
+                             max_width=self.width - 160,
+                             font=self._get_font(42), color=(255, 255, 255))
+
+        # CTA button at bottom
+        cta_y = 1420
+        ctas = ["▶ SWIPE UP!", "⚡ PLAY NOW!", "🎯 TAP TO START!"]
+        cta = random.choice(ctas)
+        draw.rounded_rectangle([150, cta_y - 40, self.width - 150, cta_y + 50],
+                              radius=45, fill=scheme["accent"])
+        self.add_text(frame, cta, (self.width // 2, cta_y + 5),
+                     font=self._get_font(50), color=(0, 0, 0))
+
+        # Corner badges
+        draw.polygon([(0, 0), (200, 0), (0, 200)], fill=scheme["accent"])
+        self.add_text(frame, "NEW", (60, 60),
+                     font=self._get_font(40), color=(0, 0, 0))
 
         frame.save(output_path, quality=95)
         return output_path

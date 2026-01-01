@@ -595,7 +595,7 @@ def generate_one_short(topic_cats, categories, cat_idx):
 
             # Generate thumbnail
             first_question = questions[0].get('question', 'Quiz Time!')[:50]
-            generator.generate_thumbnail(first_question, thumbnail_path)
+            generator.generate_thumbnail(first_question, thumbnail_path, category=category)
 
             video_id, error = upload_with_retry(output_path, title, desc, is_short=True)
             os.remove(output_path)
@@ -661,7 +661,7 @@ def generate_one_longform(topic_cats, categories, cat_idx):
 
             # Generate thumbnail
             cat_text_thumb = f" {category}" if category else ""
-            generator.generate_thumbnail(f"50{cat_text_thumb} Quiz Questions", "Test Your Knowledge!", thumbnail_path)
+            generator.generate_thumbnail(f"50{cat_text_thumb} Quiz Questions", "Test Your Knowledge!", thumbnail_path, category=category)
 
             video_id, error = upload_with_retry(output_path, title, desc, is_short=False)
             os.remove(output_path)

@@ -448,48 +448,125 @@ class BaseVideoGenerator:
         """Generate video - to be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement generate()")
 
-    def generate_thumbnail(self, title, subtitle="", output_path=None):
-        """Generate an eye-catching thumbnail for the video."""
+    def generate_thumbnail(self, title, subtitle="", output_path=None, category=None):
+        """Generate an eye-catching, high-CTR thumbnail for the video."""
+        import random
+
         if output_path is None:
             output_path = os.path.join(self.output_dir, "thumbnail.jpg")
 
-        # Create vibrant gradient background
-        img = Image.new('RGB', (1280, 720))
-        pixels = np.zeros((720, 1280, 3), dtype=np.uint8)
+        # Vibrant color schemes that pop in YouTube feeds
+        color_schemes = [
+            {"top": (220, 20, 60), "bottom": (139, 0, 0), "accent": (255, 215, 0)},      # Red/Gold
+            {"top": (0, 100, 200), "bottom": (0, 50, 120), "accent": (0, 255, 255)},     # Blue/Cyan
+            {"top": (255, 140, 0), "bottom": (200, 80, 0), "accent": (255, 255, 0)},     # Orange/Yellow
+            {"top": (0, 180, 80), "bottom": (0, 100, 50), "accent": (255, 255, 0)},      # Green/Yellow
+            {"top": (148, 0, 211), "bottom": (75, 0, 130), "accent": (255, 100, 255)},   # Purple/Pink
+            {"top": (255, 20, 147), "bottom": (139, 0, 139), "accent": (255, 255, 0)},   # Pink/Yellow
+        ]
+        scheme = random.choice(color_schemes)
 
-        # Purple to blue gradient
+        # Category-specific emojis
+        emoji_map = {
+            "geography": ["🌍", "🗺️", "🌎"],
+            "science": ["🔬", "🧪", "⚗️"],
+            "history": ["📜", "⏳", "🏛️"],
+            "sports": ["⚽", "🏆", "🎯"],
+            "movies": ["🎬", "🎥", "🍿"],
+            "music": ["🎵", "🎸", "🎤"],
+            "food": ["🍕", "🍔", "🍳"],
+            "animals": ["🦁", "🐘", "🦊"],
+            "technology": ["💻", "🤖", "📱"],
+            "math": ["🔢", "➗", "📐"],
+        }
+        default_emojis = ["🧠", "❓", "💡", "🤔", "🎯"]
+
+        if category and category.lower() in emoji_map:
+            emoji = random.choice(emoji_map[category.lower()])
+        else:
+            emoji = random.choice(default_emojis)
+
+        # Clickbait hooks that drive CTR
+        hooks = [
+            "99% FAIL This Quiz!",
+            "IMPOSSIBLE Quiz!",
+            "Only Geniuses Score 100%",
+            "Can YOU Beat This?",
+            "Test Your Brain!",
+            "Are You Smarter Than Most?",
+            "Nobody Gets 10/10!",
+            "Ultimate Challenge!",
+        ]
+        hook = random.choice(hooks)
+
+        # Create gradient background
+        pixels = np.zeros((720, 1280, 3), dtype=np.uint8)
         for y in range(720):
             ratio = y / 720
-            r = int(100 * (1 - ratio) + 30 * ratio)
-            g = int(50 * (1 - ratio) + 100 * ratio)
-            b = int(200 * (1 - ratio) + 220 * ratio)
+            r = int(scheme["top"][0] * (1 - ratio) + scheme["bottom"][0] * ratio)
+            g = int(scheme["top"][1] * (1 - ratio) + scheme["bottom"][1] * ratio)
+            b = int(scheme["top"][2] * (1 - ratio) + scheme["bottom"][2] * ratio)
             pixels[y, :] = [r, g, b]
 
         img = Image.fromarray(pixels, 'RGB')
         draw = ImageDraw.Draw(img)
 
-        # Big emoji/icon
-        self.add_text(img, "🧠", (640, 200),
-                     font=self._get_font(180), color=(255, 255, 255))
+        # Add diagonal stripes for visual interest
+        for i in range(-720, 1280, 120):
+            draw.polygon([(i, 720), (i + 60, 720), (i + 780, 0), (i + 720, 0)],
+                        fill=(255, 255, 255, 30))
+
+        # Glow effect behind emoji (circle)
+        for radius in range(120, 60, -10):
+            alpha = int(50 * (120 - radius) / 60)
+            draw.ellipse([640 - radius, 160 - radius, 640 + radius, 160 + radius],
+                        fill=(255, 255, 255, alpha) if alpha < 50 else None,
+                        outline=(255, 255, 255))
+
+        # Big emoji
+        self.add_text(img, emoji, (640, 160),
+                     font=self._get_font(200), color=(255, 255, 255))
+
+        # Hook text with thick outline (multiple shadow passes)
+        hook_font = self._get_font(70)
+        for dx in range(-5, 6, 2):
+            for dy in range(-5, 6, 2):
+                self.add_text(img, hook, (640 + dx, 330 + dy),
+                             font=hook_font, color=(0, 0, 0))
+        self.add_text(img, hook, (640, 330),
+                     font=hook_font, color=scheme["accent"])
 
         # Title with shadow
-        title_font = self._get_font(80)
-        # Shadow
-        self.add_text(img, title[:30], (644, 404),
-                     font=title_font, color=(0, 0, 0))
-        # Main text
-        self.add_text(img, title[:30], (640, 400),
-                     font=title_font, color=(255, 215, 0))
+        title_display = title[:35] if len(title) > 35 else title
+        title_font = self._get_font(65)
+        for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3), (0, 4)]:
+            self.add_text(img, title_display, (640 + dx, 450 + dy),
+                         font=title_font, color=(0, 0, 0))
+        self.add_text(img, title_display, (640, 450),
+                     font=title_font, color=(255, 255, 255))
 
         # Subtitle
         if subtitle:
-            self.add_text(img, subtitle[:40], (640, 520),
-                         font=self._get_font(50), color=(255, 255, 255))
+            self.add_text(img, subtitle[:45], (640, 530),
+                         font=self._get_font(45), color=(200, 200, 200))
 
-        # CTA badge
-        draw.rounded_rectangle([400, 580, 880, 680], radius=20, fill=(255, 0, 0))
-        self.add_text(img, "CAN YOU ANSWER?", (640, 630),
-                     font=self._get_font(40), color=(255, 255, 255))
+        # CTA badge with glow
+        badge_color = (255, 50, 50)
+        # Glow
+        for expand in range(15, 0, -3):
+            draw.rounded_rectangle([380 - expand, 580 - expand, 900 + expand, 690 + expand],
+                                  radius=25, outline=(255, 100, 100))
+        draw.rounded_rectangle([380, 580, 900, 690], radius=25, fill=badge_color)
+
+        # CTA text
+        cta_options = ["▶ PLAY NOW", "🎯 START QUIZ", "⚡ TAKE THE CHALLENGE"]
+        cta = random.choice(cta_options)
+        self.add_text(img, cta, (640, 635),
+                     font=self._get_font(48), color=(255, 255, 255))
+
+        # Corner decorations
+        draw.polygon([(0, 0), (150, 0), (0, 150)], fill=scheme["accent"])
+        draw.polygon([(1280, 0), (1130, 0), (1280, 150)], fill=scheme["accent"])
 
         img.save(output_path, quality=95)
         return output_path
