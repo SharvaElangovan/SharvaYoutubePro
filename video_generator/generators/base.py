@@ -284,7 +284,8 @@ class BaseVideoGenerator:
         use_nvenc = self._has_nvenc(ffmpeg_path)
         if use_nvenc:
             print(f"  Using NVENC hardware encoding ({sys_info['gpu_name']})")
-            encoder_args = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23']
+            # RTX 4000 optimized: p1 = fastest, high bitrate for quality
+            encoder_args = ['-c:v', 'h264_nvenc', '-preset', 'p1', '-rc', 'vbr', '-cq', '20', '-b:v', '10M', '-maxrate', '15M']
         else:
             print(f"  Using CPU encoding ({cpu_threads} threads)")
             encoder_args = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23']
