@@ -10,7 +10,8 @@ import os
 import time
 
 # Add video generator to path
-sys.path.insert(0, "/home/sharva/projects/video generator")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "video_generator"))
 
 DB_PATH = "/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db"
 
