@@ -585,3 +585,159 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         frames.append((outro_frame, 3))
 
         return self.save_video_fast(frames, output_filename)
+
+    def generate_with_sd(self, num_puzzles=5, scene_prompts=None,
+                         num_differences=5, puzzle_time=15, reveal_time=5,
+                         output_filename="spot_difference_sd.mp4"):
+        """
+        Generate Spot the Difference video using local Stable Diffusion.
+
+        Args:
+            num_puzzles: Number of puzzles to generate
+            scene_prompts: List of scene descriptions for image generation
+            num_differences: Target number of differences
+            puzzle_time: Seconds to show each puzzle
+            reveal_time: Seconds to show answer
+            output_filename: Output file name
+        """
+        import torch
+        from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
+
+        # Default prompts for variety
+        default_prompts = [
+            "a cozy living room with fireplace and bookshelves, warm lighting, detailed interior design",
+            "a beautiful garden with colorful flowers and stone path, sunny day, professional photography",
+            "a modern kitchen with fruits and vegetables on counter, clean and organized",
+            "a child's bedroom with toys and stuffed animals, colorful and playful",
+            "a beach scene with palm trees and beach chairs, tropical paradise",
+            "a mountain landscape with lake reflection, peaceful nature scene",
+            "a busy city street with shops and cafes, urban photography",
+            "a forest clearing with mushrooms and flowers, fairy tale setting",
+            "a vintage classroom with chalkboard and wooden desks, nostalgic",
+            "a bakery display with cakes and pastries, appetizing food photography",
+        ]
+
+        if not scene_prompts:
+            import random
+            scene_prompts = random.sample(default_prompts, min(num_puzzles, len(default_prompts)))
+
+        # Load SD pipeline
+        print("Loading Stable Diffusion...")
+        model_path = os.path.expanduser("~/stable-diffusion-webui/models/Stable-diffusion/sd_v1.5.safetensors")
+
+        pipe = StableDiffusionPipeline.from_single_file(
+            model_path,
+            torch_dtype=torch.float16
+        ).to("cuda")
+
+        # Also load img2img for creating variations
+        img2img = StableDiffusionImg2ImgPipeline(
+            vae=pipe.vae,
+            text_encoder=pipe.text_encoder,
+            tokenizer=pipe.tokenizer,
+            unet=pipe.unet,
+            scheduler=pipe.scheduler,
+            safety_checker=None,
+            feature_extractor=None,
+            requires_safety_checker=False,
+        ).to("cuda")
+
+        frames = []
+
+        # Calculate image size for side-by-side display
+        img_width = (self.width - 120) // 2
+        img_height = self.height - 200
+
+        # Intro
+        intro_frame = self.create_title_frame("Spot the Difference",
+                                              f"{num_puzzles} Puzzles - Can You Find Them All?")
+        frames.append((intro_frame, 3))
+
+        # Countdown
+        for i in range(3, 0, -1):
+            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
+            frames.append((countdown_frame, 1))
+
+        puzzles_generated = 0
+        for idx in range(num_puzzles):
+            prompt = scene_prompts[idx % len(scene_prompts)]
+            print(f"Generating SD puzzle {idx + 1}/{num_puzzles}: {prompt[:50]}...")
+
+            try:
+                # Generate base image
+                seed = random.randint(0, 2**32 - 1)
+                generator = torch.Generator("cuda").manual_seed(seed)
+
+                base_result = pipe(
+                    prompt,
+                    negative_prompt="blurry, low quality, distorted, ugly",
+                    num_inference_steps=25,
+                    generator=generator,
+                    width=512,
+                    height=512,
+                )
+                base_img = base_result.images[0]
+
+                # Create modified version using img2img with slight variation
+                mod_generator = torch.Generator("cuda").manual_seed(seed + 1)
+
+                modified_result = img2img(
+                    prompt=prompt + ", slightly different details",
+                    image=base_img,
+                    strength=0.3,  # Lower = more similar to original
+                    negative_prompt="blurry, low quality, distorted",
+                    num_inference_steps=20,
+                    generator=mod_generator,
+                )
+                modified_img = modified_result.images[0]
+
+                # Resize to fit our video layout
+                base_img = base_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
+                modified_img = modified_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
+
+                puzzles_generated += 1
+
+            except Exception as e:
+                print(f"  SD generation failed: {e}, skipping puzzle")
+                continue
+
+            # Puzzle title
+            title_frame = self.create_title_frame(f"Puzzle {puzzles_generated}",
+                                                  f"Find the differences!")
+            frames.append((title_frame, 2))
+
+            # Detect differences for reveal
+            diff_locations = self.detect_differences(base_img, modified_img, min_area=300, max_regions=8)
+            num_found = len(diff_locations)
+
+            # Puzzle with timer
+            for sec in range(puzzle_time, 0, -1):
+                puzzle_frame = self.create_comparison_frame(
+                    base_img, modified_img,
+                    title=f"Puzzle {puzzles_generated}",
+                    num_differences=num_found if num_found > 0 else num_differences,
+                    show_timer=sec
+                )
+                frames.append((puzzle_frame, 1))
+
+            # Reveal with circles around differences
+            reveal_frame = self.create_comparison_frame(
+                base_img, modified_img,
+                title=f"Answer - {num_found} Differences Found!",
+                highlight_locations=diff_locations if diff_locations else None
+            )
+            frames.append((reveal_frame, reveal_time))
+
+        if puzzles_generated == 0:
+            raise RuntimeError("Failed to generate any puzzles")
+
+        # Clean up GPU memory
+        del pipe
+        del img2img
+        torch.cuda.empty_cache()
+
+        # Final outro
+        outro_frame = self.create_title_frame("Great Job!", "Thanks for playing!")
+        frames.append((outro_frame, 3))
+
+        return self.save_video_fast(frames, output_filename)
