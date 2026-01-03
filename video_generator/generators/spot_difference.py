@@ -604,12 +604,43 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
     def generate_auto(self, num_puzzles=5, num_differences=3, puzzle_time=10,
                       reveal_time=5, output_filename="spot_difference_auto.mp4"):
-        """Generate Spot the Difference video using Stable Diffusion.
+        """Generate Spot the Difference video using Pollinations.ai (free, no API key).
 
-        This is an alias for generate_with_sd for UI compatibility.
+        Fetches cartoon images from Pollinations.ai and uses generate_batch.
         """
-        return self.generate_with_sd(
-            num_puzzles=num_puzzles,
+        import tempfile
+        from ai_image_generator import AIImageGenerator
+
+        ai_gen = AIImageGenerator()
+        search_terms = [
+            "cozy living room with fireplace", "garden with colorful flowers",
+            "kitchen with fruits on counter", "bedroom with toys",
+            "beach with palm trees", "mountain landscape with lake",
+            "city street with shops", "forest with mushrooms",
+            "classroom with chalkboard", "bakery with cakes"
+        ]
+
+        print(f"Generating {num_puzzles} images with Pollinations.ai...")
+        image_paths = []
+        temp_dir = tempfile.mkdtemp()
+
+        for i in range(num_puzzles):
+            term = search_terms[i % len(search_terms)]
+            try:
+                img, _ = ai_gen.generate_image(term, width=512, height=512)
+                path = os.path.join(temp_dir, f"puzzle_{i}.png")
+                img.save(path)
+                image_paths.append(path)
+                print(f"  Generated image {i + 1}/{num_puzzles}")
+            except Exception as e:
+                print(f"  Failed to generate image {i + 1}: {e}")
+
+        if not image_paths:
+            raise RuntimeError("Failed to generate any images")
+
+        # Generate using batch method
+        return self.generate_batch(
+            image_paths=image_paths,
             num_differences=num_differences,
             puzzle_time=puzzle_time,
             reveal_time=reveal_time,
