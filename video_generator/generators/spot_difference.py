@@ -617,3 +617,39 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         frames.append((outro, 3))
 
         return self.save_video_fast(frames, output_filename)
+
+    def generate_auto(self, num_puzzles=5, num_differences=3, puzzle_time=10,
+                      reveal_time=5, output_filename="spot_difference_auto.mp4"):
+        """Generate Spot the Difference video by fetching images from the internet."""
+        # Fetch images from internet
+        fetcher = self._get_image_fetcher()
+        search_terms = [
+            "colorful cartoon room", "illustrated garden scene", "cartoon kitchen",
+            "children bedroom illustration", "beach cartoon scene", "mountain landscape cartoon",
+            "city street illustration", "forest cartoon scene", "classroom illustration",
+            "bakery cartoon display", "park scene illustration", "library cartoon interior"
+        ]
+
+        print(f"Fetching {num_puzzles} images from the internet...")
+        image_paths = []
+        for i in range(num_puzzles):
+            term = search_terms[i % len(search_terms)]
+            try:
+                path = fetcher.fetch_image(term)
+                if path:
+                    image_paths.append(path)
+                    print(f"  Fetched image {i + 1}/{num_puzzles}")
+            except Exception as e:
+                print(f"  Failed to fetch image {i + 1}: {e}")
+
+        if not image_paths:
+            raise RuntimeError("Failed to fetch any images")
+
+        # Generate using batch method
+        return self.generate_batch(
+            image_paths=image_paths,
+            num_differences=num_differences,
+            puzzle_time=puzzle_time,
+            reveal_time=reveal_time,
+            output_filename=output_filename
+        )
