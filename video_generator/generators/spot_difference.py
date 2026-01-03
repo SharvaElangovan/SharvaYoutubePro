@@ -19,8 +19,6 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         super().__init__(**kwargs)
         self.channel_name = channel_name
         self.default_puzzle_time = 15
-        self._image_fetcher = None
-        self._difference_maker = None
 
         # Color scheme
         self.brand_blue = (25, 55, 95)
@@ -29,20 +27,6 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         self.header_height = 70
         self.footer_height = 60
         self.border_width = 25
-
-    def _get_image_fetcher(self):
-        """Lazy load image fetcher."""
-        if self._image_fetcher is None:
-            from image_fetcher import ImageFetcher
-            self._image_fetcher = ImageFetcher()
-        return self._image_fetcher
-
-    def _get_difference_maker(self):
-        """Lazy load difference maker."""
-        if self._difference_maker is None:
-            from difference_maker import DifferenceMaker
-            self._difference_maker = DifferenceMaker()
-        return self._difference_maker
 
     def detect_differences(self, img1, img2, min_area=500, max_regions=10):
         """Detect differences between two images and return circle locations."""
@@ -620,34 +604,12 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
     def generate_auto(self, num_puzzles=5, num_differences=3, puzzle_time=10,
                       reveal_time=5, output_filename="spot_difference_auto.mp4"):
-        """Generate Spot the Difference video by fetching images from the internet."""
-        # Fetch images from internet
-        fetcher = self._get_image_fetcher()
-        search_terms = [
-            "colorful cartoon room", "illustrated garden scene", "cartoon kitchen",
-            "children bedroom illustration", "beach cartoon scene", "mountain landscape cartoon",
-            "city street illustration", "forest cartoon scene", "classroom illustration",
-            "bakery cartoon display", "park scene illustration", "library cartoon interior"
-        ]
+        """Generate Spot the Difference video using Stable Diffusion.
 
-        print(f"Fetching {num_puzzles} images from the internet...")
-        image_paths = []
-        for i in range(num_puzzles):
-            term = search_terms[i % len(search_terms)]
-            try:
-                path = fetcher.fetch_image(term)
-                if path:
-                    image_paths.append(path)
-                    print(f"  Fetched image {i + 1}/{num_puzzles}")
-            except Exception as e:
-                print(f"  Failed to fetch image {i + 1}: {e}")
-
-        if not image_paths:
-            raise RuntimeError("Failed to fetch any images")
-
-        # Generate using batch method
-        return self.generate_batch(
-            image_paths=image_paths,
+        This is an alias for generate_with_sd for UI compatibility.
+        """
+        return self.generate_with_sd(
+            num_puzzles=num_puzzles,
             num_differences=num_differences,
             puzzle_time=puzzle_time,
             reveal_time=reveal_time,
