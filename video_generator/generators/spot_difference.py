@@ -1,24 +1,34 @@
-"""Spot the Difference Video Generator."""
+"""Spot the Difference Video Generator - Captain Brain Style."""
 
 from .base import BaseVideoGenerator
-from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageFont
 import numpy as np
 import random
 import os
 import sys
+import math
 
 # Add parent directory for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class SpotDifferenceGenerator(BaseVideoGenerator):
-    """Generate Spot the Difference puzzle videos from user images or auto-fetched images."""
+    """Generate Spot the Difference puzzle videos with branded styling."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, channel_name="BRAIN BLITZ", **kwargs):
         super().__init__(**kwargs)
-        self.default_puzzle_time = 10  # default seconds to find differences
+        self.channel_name = channel_name
+        self.default_puzzle_time = 15
         self._image_fetcher = None
         self._difference_maker = None
+
+        # Color scheme
+        self.brand_blue = (25, 55, 95)
+        self.brand_gold = (220, 180, 50)
+        self.brand_light_blue = (70, 130, 180)
+        self.header_height = 70
+        self.footer_height = 60
+        self.border_width = 25
 
     def _get_image_fetcher(self):
         """Lazy load image fetcher."""
@@ -35,53 +45,37 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         return self._difference_maker
 
     def detect_differences(self, img1, img2, min_area=500, max_regions=10):
-        """
-        Detect differences between two images and return circle locations.
-
-        Returns list of (cx, cy, radius) tuples for circling differences.
-        """
-        # Convert to numpy arrays
+        """Detect differences between two images and return circle locations."""
         arr1 = np.array(img1).astype(np.float32)
         arr2 = np.array(img2).astype(np.float32)
-
-        # Calculate absolute difference
         diff = np.abs(arr1 - arr2)
-
-        # Convert to grayscale difference
         diff_gray = np.mean(diff, axis=2)
-
-        # Threshold to find significant differences
         threshold = 30
         binary = (diff_gray > threshold).astype(np.uint8)
 
-        # Simple grid-based region detection (no scipy needed)
-        # Divide image into grid cells and find cells with differences
         height, width = binary.shape
-        cell_size = 80  # Size of each grid cell
+        cell_size = 80
         regions = []
 
         for y in range(0, height - cell_size, cell_size // 2):
             for x in range(0, width - cell_size, cell_size // 2):
                 cell = binary[y:y+cell_size, x:x+cell_size]
                 diff_count = np.sum(cell)
-
-                if diff_count > min_area // 10:  # Significant difference in this cell
+                if diff_count > min_area // 10:
                     cx = x + cell_size // 2
                     cy = y + cell_size // 2
                     regions.append((cx, cy, cell_size // 2 + 15, diff_count))
 
-        # Merge nearby regions
         merged = []
         used = set()
         for i, (cx1, cy1, r1, count1) in enumerate(regions):
             if i in used:
                 continue
-            # Find all nearby regions
             total_x, total_y, total_count, num = cx1, cy1, count1, 1
             for j, (cx2, cy2, r2, count2) in enumerate(regions):
                 if j != i and j not in used:
                     dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
-                    if dist < cell_size * 1.5:  # Close enough to merge
+                    if dist < cell_size * 1.5:
                         total_x += cx2
                         total_y += cy2
                         total_count += count2
@@ -90,73 +84,285 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
             used.add(i)
             merged.append((total_x // num, total_y // num, 50, total_count))
 
-        # Sort by difference amount and take top N
         merged.sort(key=lambda x: x[3], reverse=True)
         merged = merged[:max_regions]
-
-        # Return circles with good radius
         return [(cx, cy, max(r, 40)) for cx, cy, r, _ in merged]
 
     def load_and_resize_image(self, image_path, max_width=900, max_height=700):
         """Load an image and resize it to fit the frame."""
         img = Image.open(image_path).convert('RGB')
-
-        # Calculate scaling to fit within max dimensions
         ratio = min(max_width / img.width, max_height / img.height)
         new_size = (int(img.width * ratio), int(img.height * ratio))
-
         return img.resize(new_size, Image.Resampling.LANCZOS)
 
-    def create_modified_image(self, original_img, num_changes=3):
-        """
-        Create a modified version of the image with specified number of changes.
-        Returns the modified image and list of change locations for highlighting.
+    def draw_dotted_circle(self, draw, cx, cy, radius, color1=(255, 0, 255), color2=(0, 255, 0),
+                          dot_count=40, dot_radius=4):
+        """Draw an animated-style dotted circle with alternating colors."""
+        for i in range(dot_count):
+            angle = (2 * math.pi * i) / dot_count
+            x = cx + radius * math.cos(angle)
+            y = cy + radius * math.sin(angle)
+            color = color1 if i % 2 == 0 else color2
+            draw.ellipse(
+                [x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius],
+                fill=color
+            )
+
+    def create_branded_frame(self, img1, img2, puzzle_label="FIRST",
+                            show_circles=False, circle_locations=None):
+        """Create a branded frame with two images side by side."""
+        # Create base frame with brand blue background
+        frame = Image.new('RGB', (self.width, self.height), self.brand_blue)
+        draw = ImageDraw.Draw(frame)
+
+        # Calculate image area dimensions
+        content_top = self.header_height
+        content_bottom = self.height - self.footer_height
+        content_height = content_bottom - content_top
+
+        # Image dimensions (side by side with gap)
+        gap = 20
+        img_area_width = (self.width - self.border_width * 2 - gap) // 2
+        img_area_height = content_height - self.border_width * 2
+
+        # Resize images to fit
+        img1_resized = img1.copy()
+        img2_resized = img2.copy()
+
+        # Scale images to fit area while maintaining aspect ratio
+        for img in [img1_resized, img2_resized]:
+            if img.width != img_area_width or img.height != img_area_height:
+                ratio = min(img_area_width / img.width, img_area_height / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        img1_resized = img1.resize(
+            (int(img1.width * min(img_area_width / img1.width, img_area_height / img1.height)),
+             int(img1.height * min(img_area_width / img1.width, img_area_height / img1.height))),
+            Image.Resampling.LANCZOS
+        )
+        img2_resized = img2.resize(
+            (int(img2.width * min(img_area_width / img2.width, img_area_height / img2.height)),
+             int(img2.height * min(img_area_width / img2.width, img_area_height / img2.height))),
+            Image.Resampling.LANCZOS
+        )
+
+        # Calculate positions to center images in their areas
+        x1 = self.border_width + (img_area_width - img1_resized.width) // 2
+        x2 = self.width // 2 + gap // 2 + (img_area_width - img2_resized.width) // 2
+        y_center = content_top + self.border_width + (img_area_height - img1_resized.height) // 2
+
+        # Draw decorative border pattern (blue gradient effect)
+        for i in range(self.border_width):
+            alpha = i / self.border_width
+            border_color = (
+                int(25 + alpha * 45),
+                int(55 + alpha * 75),
+                int(95 + alpha * 85)
+            )
+            draw.rectangle(
+                [i, content_top + i, self.width - i, content_bottom - i],
+                outline=border_color
+            )
+
+        # Paste images
+        frame.paste(img1_resized, (x1, y_center))
+        frame.paste(img2_resized, (x2, y_center))
+
+        # Draw thin border around each image
+        draw.rectangle(
+            [x1 - 2, y_center - 2, x1 + img1_resized.width + 2, y_center + img1_resized.height + 2],
+            outline=(100, 150, 200), width=2
+        )
+        draw.rectangle(
+            [x2 - 2, y_center - 2, x2 + img2_resized.width + 2, y_center + img2_resized.height + 2],
+            outline=(100, 150, 200), width=2
+        )
+
+        # Draw circles on RIGHT image only if showing answers
+        if show_circles and circle_locations:
+            # Scale circle positions to resized image
+            scale_x = img2_resized.width / img2.width
+            scale_y = img2_resized.height / img2.height
+
+            for cx, cy, radius in circle_locations:
+                scaled_cx = x2 + int(cx * scale_x)
+                scaled_cy = y_center + int(cy * scale_y)
+                scaled_radius = int(radius * min(scale_x, scale_y))
+                self.draw_dotted_circle(draw, scaled_cx, scaled_cy, scaled_radius)
+
+        # Header bar
+        draw.rectangle([0, 0, self.width, self.header_height], fill=self.brand_blue)
+
+        # Channel name (left side with gold color and italic style)
+        header_font = self._get_font(50)
+        self.add_text(frame, self.channel_name, (200, self.header_height // 2),
+                     font=header_font, color=self.brand_gold)
+
+        # Puzzle label badge (right side)
+        badge_font = self._get_font(35)
+        badge_text = puzzle_label
+        badge_width = 150
+        badge_x = self.width - badge_width - 30
+        badge_y = self.header_height // 2
+
+        # Badge background
+        draw.rounded_rectangle(
+            [badge_x - badge_width // 2, badge_y - 25, badge_x + badge_width // 2, badge_y + 25],
+            radius=5, fill=self.brand_gold
+        )
+        self.add_text(frame, badge_text, (badge_x, badge_y),
+                     font=badge_font, color=self.brand_blue)
+
+        # Watermark on both images
+        watermark_font = self._get_font(20)
+        watermark = f"@{self.channel_name.replace(' ', '-')}"
+        self.add_text(frame, watermark, (x1 + 80, y_center + 25),
+                     font=watermark_font, color=(255, 255, 255, 180))
+        self.add_text(frame, watermark, (x2 + 80, y_center + 25),
+                     font=watermark_font, color=(255, 255, 255, 180))
+
+        # Footer
+        draw.rectangle([0, self.height - self.footer_height, self.width, self.height],
+                      fill=self.brand_blue)
+        footer_font = self._get_font(45)
+        self.add_text(frame, "SPOT THE DIFFERENCE", (self.width // 2, self.height - self.footer_height // 2),
+                     font=footer_font, color=(255, 255, 255))
+
+        # Divider line under header
+        draw.line([(0, self.header_height), (self.width, self.header_height)],
+                 fill=self.brand_light_blue, width=3)
+        # Divider line above footer
+        draw.line([(0, self.height - self.footer_height), (self.width, self.height - self.footer_height)],
+                 fill=self.brand_light_blue, width=3)
+
+        return frame
+
+    def create_intro_frame(self, num_puzzles, num_differences):
+        """Create animated intro frame."""
+        frame = Image.new('RGB', (self.width, self.height), self.brand_blue)
+        draw = ImageDraw.Draw(frame)
+
+        # Add subtle gradient/pattern
+        for y in range(self.height):
+            alpha = y / self.height
+            color = (
+                int(25 + alpha * 20),
+                int(55 + alpha * 30),
+                int(95 + alpha * 40)
+            )
+            draw.line([(0, y), (self.width, y)], fill=color)
+
+        # Channel name
+        title_font = self._get_font(90)
+        self.add_text(frame, self.channel_name, (self.width // 2, 200),
+                     font=title_font, color=self.brand_gold)
+
+        # Main title
+        main_font = self._get_font(80)
+        self.add_text(frame, f"SPOT THE {num_differences} DIFFERENCES",
+                     (self.width // 2, 350),
+                     font=main_font, color=(100, 200, 255))
+
+        # Subtitle
+        sub_font = self._get_font(60)
+        self.add_text(frame, f"{num_puzzles} PUZZLES AWAIT!",
+                     (self.width // 2, 480),
+                     font=sub_font, color=self.brand_gold)
+
+        return frame
+
+    def create_challenge_transition(self, challenge_num, total_challenges):
+        """Create transition screen between challenges."""
+        frame = Image.new('RGB', (self.width, self.height), (30, 30, 40))
+        draw = ImageDraw.Draw(frame)
+
+        # Draw perspective corridor effect
+        center_x, center_y = self.width // 2, self.height // 2
+        for i in range(20, 0, -1):
+            scale = i / 20
+            rect_w = int(self.width * scale * 0.8)
+            rect_h = int(self.height * scale * 0.8)
+            gray = int(40 + (20 - i) * 8)
+            draw.rectangle(
+                [center_x - rect_w // 2, center_y - rect_h // 2,
+                 center_x + rect_w // 2, center_y + rect_h // 2],
+                outline=(gray, gray, gray + 20), width=2
+            )
+
+        # Channel name in corner
+        corner_font = self._get_font(35)
+        self.add_text(frame, self.channel_name, (150, 40),
+                     font=corner_font, color=self.brand_gold)
+
+        # Challenge text
+        ordinals = ["First", "Second", "Third", "Fourth", "Fifth",
+                   "Sixth", "Seventh", "Eighth", "Ninth", "Tenth"]
+        ordinal = ordinals[challenge_num - 1] if challenge_num <= 10 else f"#{challenge_num}"
+
+        challenge_font = self._get_font(80)
+        self.add_text(frame, f"The {ordinal} Challenge",
+                     (self.width // 2, self.height // 2),
+                     font=challenge_font, color=(200, 200, 220))
+
+        return frame
+
+    def create_modified_image(self, original_img, num_changes=3, hard_mode=True):
+        """Create a modified version of the image with specified number of changes.
+
+        hard_mode: If True, creates smaller and more subtle differences that are harder to spot.
         """
         modified = original_img.copy()
         img_width, img_height = modified.size
 
-        # Divide image into grid sections to place changes
-        grid_cols = 3
-        grid_rows = 3
+        # Use finer grid for harder mode - more potential locations
+        grid_cols = 5 if hard_mode else 3
+        grid_rows = 5 if hard_mode else 3
         cell_width = img_width // grid_cols
         cell_height = img_height // grid_rows
 
-        # Get random cells for changes (avoid edges)
         all_cells = [(r, c) for r in range(grid_rows) for c in range(grid_cols)]
         change_cells = random.sample(all_cells, min(num_changes, len(all_cells)))
 
-        change_locations = []  # Store (x, y, radius) for highlighting
+        change_locations = []
 
-        modification_types = [
-            'color_shift',
-            'blur_region',
-            'brightness_change',
-            'remove_region',
-            'add_shape',
-            'flip_region',
-            'tint_region'
-        ]
+        # Hard mode uses only subtle modifications
+        if hard_mode:
+            modification_types = [
+                'subtle_color', 'subtle_blur', 'subtle_brightness',
+                'remove_small', 'tiny_shape', 'subtle_hue'
+            ]
+        else:
+            modification_types = [
+                'color_shift', 'blur_region', 'brightness_change',
+                'remove_region', 'add_shape', 'flip_region', 'tint_region'
+            ]
 
         for i, (row, col) in enumerate(change_cells):
-            # Calculate region bounds
-            x1 = col * cell_width + cell_width // 4
-            y1 = row * cell_height + cell_height // 4
-            x2 = x1 + cell_width // 2
-            y2 = y1 + cell_height // 2
+            # Smaller regions for hard mode (25-35 pixels vs 40-80 pixels)
+            if hard_mode:
+                region_size = random.randint(25, 35)
+                x1 = col * cell_width + random.randint(5, cell_width - region_size - 5)
+                y1 = row * cell_height + random.randint(5, cell_height - region_size - 5)
+                x2 = x1 + region_size
+                y2 = y1 + region_size
+            else:
+                x1 = col * cell_width + cell_width // 4
+                y1 = row * cell_height + cell_height // 4
+                x2 = x1 + cell_width // 2
+                y2 = y1 + cell_height // 2
 
-            # Ensure bounds are within image
-            x1 = max(10, min(x1, img_width - 60))
-            y1 = max(10, min(y1, img_height - 60))
-            x2 = max(x1 + 40, min(x2, img_width - 10))
-            y2 = max(y1 + 40, min(y2, img_height - 10))
+            x1 = max(10, min(x1, img_width - 40))
+            y1 = max(10, min(y1, img_height - 40))
+            x2 = max(x1 + 20, min(x2, img_width - 10))
+            y2 = max(y1 + 20, min(y2, img_height - 10))
 
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
-            radius = max(x2 - x1, y2 - y1) // 2 + 10
+            radius = max(x2 - x1, y2 - y1) // 2 + 8
 
             change_locations.append((center_x, center_y, radius))
 
-            # Apply a random modification
             mod_type = random.choice(modification_types)
             modified = self._apply_modification(modified, (x1, y1, x2, y2), mod_type)
 
@@ -165,32 +371,20 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
     def _apply_modification(self, img, region, mod_type):
         """Apply a specific modification to a region of the image."""
         x1, y1, x2, y2 = region
-
-        # Crop the region
         region_img = img.crop((x1, y1, x2, y2))
 
         if mod_type == 'color_shift':
-            # Shift colors in the region
             r, g, b = region_img.split()
-            # Rotate color channels
             region_img = Image.merge('RGB', (g, b, r))
-
         elif mod_type == 'blur_region':
-            # Blur the region heavily
             region_img = region_img.filter(ImageFilter.GaussianBlur(radius=8))
-
         elif mod_type == 'brightness_change':
-            # Make region brighter or darker
             enhancer = ImageEnhance.Brightness(region_img)
             region_img = enhancer.enhance(random.choice([0.4, 1.8]))
-
         elif mod_type == 'remove_region':
-            # Fill region with a solid color (sampled from edge)
             edge_color = img.getpixel((x1, y1))
             region_img = Image.new('RGB', region_img.size, edge_color)
-
         elif mod_type == 'add_shape':
-            # Add a colored shape to the region
             draw = ImageDraw.Draw(region_img)
             shape_color = random.choice([
                 (255, 100, 100), (100, 255, 100), (100, 100, 255),
@@ -202,426 +396,40 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                 draw.ellipse((w//4, h//4, 3*w//4, 3*h//4), fill=shape_color)
             else:
                 draw.rectangle((w//4, h//4, 3*w//4, 3*h//4), fill=shape_color)
-
         elif mod_type == 'flip_region':
-            # Flip the region horizontally
             region_img = region_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-
         elif mod_type == 'tint_region':
-            # Apply a color tint
             tint_color = random.choice([(255, 0, 0), (0, 255, 0), (0, 0, 255)])
             tint_layer = Image.new('RGB', region_img.size, tint_color)
             region_img = Image.blend(region_img, tint_layer, 0.5)
 
-        # Paste modified region back
         result = img.copy()
         result.paste(region_img, (x1, y1))
-
         return result
 
-    def create_comparison_frame(self, img1, img2, title="Find the Differences!",
-                                highlight_locations=None, num_differences=None, show_timer=None):
-        """Create a frame showing original and modified images side-by-side (landscape)."""
-        frame = self.create_frame()
-
-        # Title at top
-        self.add_text(frame, title, (self.width // 2, 50),
-                     font=self.font_large, color=self.accent_color)
-
-        if num_differences and not highlight_locations:
-            self.add_text(frame, f"Find {num_differences} differences!",
-                         (self.width // 2, 110),
-                         font=self.font_small, color=self.text_color)
-
-        # Create copies to draw on
-        display_img1 = img1.copy()
-        display_img2 = img2.copy()
-
-        # Add highlights if revealing answers
-        if highlight_locations:
-            draw1 = ImageDraw.Draw(display_img1)
-            draw2 = ImageDraw.Draw(display_img2)
-
-            for loc in highlight_locations:
-                # Handle both tuple formats: (cx, cy, radius) or dict with 'region'
-                if isinstance(loc, dict):
-                    region = loc['region']
-                    cx = (region[0] + region[2]) // 2
-                    cy = (region[1] + region[3]) // 2
-                    radius = max(region[2] - region[0], region[3] - region[1]) // 2 + 15
-                else:
-                    cx, cy, radius = loc
-
-                # Draw circle highlight on both images
-                draw1.ellipse((cx - radius, cy - radius, cx + radius, cy + radius),
-                             outline=(255, 50, 50), width=5)
-                draw2.ellipse((cx - radius, cy - radius, cx + radius, cy + radius),
-                             outline=(255, 50, 50), width=5)
-
-        # Add borders to images
-        self._add_image_border(display_img1)
-        self._add_image_border(display_img2)
-
-        # LANDSCAPE: Side-by-side layout
-        gap = 40
-        total_width = img1.width + img2.width + gap
-        x1 = (self.width - total_width) // 2
-        x2 = x1 + img1.width + gap
-        y_pos = 150
-
-        frame.paste(display_img1, (x1, y_pos))
-        frame.paste(display_img2, (x2, y_pos))
-
-        # Labels below each image
-        label_y = y_pos + img1.height + 20
-        self.add_text(frame, "Original", (x1 + img1.width // 2, label_y),
-                     font=self.font_small, color=(150, 150, 150))
-        self.add_text(frame, "Modified", (x2 + img2.width // 2, label_y),
-                     font=self.font_small, color=(150, 150, 150))
-
-        # Timer in top-left corner
-        if show_timer is not None:
-            timer_x = 80
-            timer_y = 60
-            self.add_circle(frame, (timer_x, timer_y), 45,
-                           fill_color=(60, 60, 80), outline_color=self.accent_color)
-            self.add_text(frame, str(show_timer), (timer_x, timer_y),
-                         font=self.font_medium, color=self.accent_color)
-
-        return frame
-
-    def _add_image_border(self, img):
-        """Add a border to an image."""
-        draw = ImageDraw.Draw(img)
-        draw.rectangle((0, 0, img.width - 1, img.height - 1),
-                      outline=(100, 100, 120), width=3)
-
-    def generate(self, image_path, num_differences=3, puzzle_time=10,
-                 reveal_time=5, output_filename="spot_difference.mp4"):
-        """
-        Generate a Spot the Difference video from a user-provided image using fast FFmpeg.
-
-        Args:
-            image_path: Path to the original image
-            num_differences: Number of differences to create (default 3)
-            puzzle_time: Seconds to show puzzle (time for viewer to find differences)
-            reveal_time: Seconds to show the answer
-            output_filename: Output file name
-        """
-        frames = []  # List of (PIL_Image, duration) tuples
-
-        # Load and resize the original image
-        print(f"Loading image: {image_path}")
-        original_img = self.load_and_resize_image(image_path)
-
-        # Create modified version
-        print(f"Creating {num_differences} differences...")
-        modified_img, change_locations = self.create_modified_image(original_img, num_differences)
-
-        # Intro
-        intro_frame = self.create_title_frame("Spot the Difference", f"Find {num_differences} differences!")
-        frames.append((intro_frame, 3))
-
-        # Countdown
-        for i in range(3, 0, -1):
-            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
-            frames.append((countdown_frame, 1))
-
-        # Puzzle with timer countdown
-        for sec in range(puzzle_time, 0, -1):
-            puzzle_frame = self.create_comparison_frame(
-                original_img, modified_img,
-                title="Spot the Difference",
-                num_differences=num_differences,
-                show_timer=sec
-            )
-            frames.append((puzzle_frame, 1))
-
-        # Reveal differences
-        reveal_frame = self.create_comparison_frame(
-            original_img, modified_img,
-            title=f"Answer: {num_differences} Differences!",
-            highlight_locations=change_locations
-        )
-        frames.append((reveal_frame, reveal_time))
-
-        # Outro
-        outro_frame = self.create_title_frame("Did you find them all?", "Thanks for playing!")
-        frames.append((outro_frame, 3))
-
-        return self.save_video_fast(frames, output_filename)
-
-    def generate_batch(self, image_paths, num_differences=3, puzzle_time=10,
-                       reveal_time=5, output_filename="spot_difference_batch.mp4"):
-        """
-        Generate a video with multiple Spot the Difference puzzles using fast FFmpeg.
-
-        Args:
-            image_paths: List of paths to images
-            num_differences: Number of differences per puzzle
-            puzzle_time: Seconds per puzzle
-            reveal_time: Seconds to show each answer
-            output_filename: Output file name
-        """
-        frames = []  # List of (PIL_Image, duration) tuples
-
-        # Intro
-        intro_frame = self.create_title_frame("Spot the Difference",
-                                              f"{len(image_paths)} Puzzles - {num_differences} differences each!")
-        frames.append((intro_frame, 3))
-
-        # Countdown
-        for i in range(3, 0, -1):
-            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
-            frames.append((countdown_frame, 1))
-
-        for idx, image_path in enumerate(image_paths, 1):
-            print(f"Processing image {idx}/{len(image_paths)}: {image_path}")
-
-            # Load image
-            original_img = self.load_and_resize_image(image_path)
-            modified_img, change_locations = self.create_modified_image(original_img, num_differences)
-
-            # Puzzle number
-            title_frame = self.create_title_frame(f"Puzzle {idx}", f"Find {num_differences} differences!")
-            frames.append((title_frame, 2))
-
-            # Puzzle with timer
-            for sec in range(puzzle_time, 0, -1):
-                puzzle_frame = self.create_comparison_frame(
-                    original_img, modified_img,
-                    title=f"Puzzle {idx}",
-                    num_differences=num_differences,
-                    show_timer=sec
-                )
-                frames.append((puzzle_frame, 1))
-
-            # Reveal
-            reveal_frame = self.create_comparison_frame(
-                original_img, modified_img,
-                title="Differences Found!",
-                highlight_locations=change_locations
-            )
-            frames.append((reveal_frame, reveal_time))
-
-        # Outro
-        outro_frame = self.create_title_frame("Great Job!", "Thanks for playing!")
-        frames.append((outro_frame, 3))
-
-        return self.save_video_fast(frames, output_filename)
-
-    def generate_auto(self, num_puzzles=5, num_differences=4, puzzle_time=10,
-                      reveal_time=5, output_filename="spot_difference_auto.mp4"):
-        """
-        Auto-generate Spot the Difference video by fetching images from the internet.
-
-        Args:
-            num_puzzles: Number of puzzles to generate
-            num_differences: Number of differences per puzzle
-            puzzle_time: Seconds to show each puzzle
-            reveal_time: Seconds to show answer
-            output_filename: Output file name
-        """
-        frames = []
-
-        # Get components
-        fetcher = self._get_image_fetcher()
-        maker = self._get_difference_maker()
-
-        # Calculate image size for side-by-side display
-        # Leave room for gap and margins
-        img_width = (self.width - 120) // 2  # 40px gap + 40px margins each side
-        img_height = self.height - 200  # Room for title and labels
-
-        # Intro
-        intro_frame = self.create_title_frame("Spot the Difference",
-                                              f"{num_puzzles} Puzzles - {num_differences} differences each!")
-        frames.append((intro_frame, 3))
-
-        # Countdown
-        for i in range(3, 0, -1):
-            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
-            frames.append((countdown_frame, 1))
-
-        for idx in range(1, num_puzzles + 1):
-            print(f"Generating puzzle {idx}/{num_puzzles}...")
-
-            # Fetch image from internet
-            print(f"  Fetching image...")
-            original_img = fetcher.fetch_image(width=img_width, height=img_height)
-
-            if original_img is None:
-                print(f"  Failed to fetch image, skipping puzzle {idx}")
-                continue
-
-            # Create differences
-            print(f"  Creating {num_differences} differences...")
-            modified_img, differences = maker.create_differences(original_img, num_differences)
-
-            # Puzzle number
-            title_frame = self.create_title_frame(f"Puzzle {idx}", f"Find {num_differences} differences!")
-            frames.append((title_frame, 2))
-
-            # Puzzle with timer
-            for sec in range(puzzle_time, 0, -1):
-                puzzle_frame = self.create_comparison_frame(
-                    original_img, modified_img,
-                    title=f"Puzzle {idx}",
-                    num_differences=num_differences,
-                    show_timer=sec
-                )
-                frames.append((puzzle_frame, 1))
-
-            # Reveal
-            reveal_frame = self.create_comparison_frame(
-                original_img, modified_img,
-                title="Differences Found!",
-                highlight_locations=differences
-            )
-            frames.append((reveal_frame, reveal_time))
-
-        # Outro
-        outro_frame = self.create_title_frame("Great Job!", "Thanks for playing!")
-        frames.append((outro_frame, 3))
-
-        return self.save_video_fast(frames, output_filename)
-
-    def generate_with_ai(self, num_puzzles=5, scene_prompts=None,
-                         num_differences=5, puzzle_time=10, reveal_time=5,
-                         difficulty='medium',
-                         output_filename="spot_difference_ai.mp4"):
-        """
-        Generate Spot the Difference video using AI-generated images from Pollinations.ai.
-
-        Args:
-            num_puzzles: Number of puzzles to generate
-            scene_prompts: List of scene descriptions for image generation
-            num_differences: Target number of differences (display only)
-            puzzle_time: Seconds to show each puzzle
-            reveal_time: Seconds to show answer
-            difficulty: 'easy', 'medium', or 'hard' - controls how subtle the differences are
-            output_filename: Output file name
-        """
-        from ai_image_generator import AIImageGenerator, SCENE_PROMPTS
-
-        ai_gen = AIImageGenerator()
-        frames = []
-
-        # Default prompts if none provided
-        if not scene_prompts:
-            import random
-            scene_prompts = random.sample(SCENE_PROMPTS, min(num_puzzles, len(SCENE_PROMPTS)))
-
-        # Calculate image size for side-by-side display
-        img_width = (self.width - 120) // 2
-        img_height = self.height - 200
-
-        # Intro (no AI mention for monetization)
-        intro_frame = self.create_title_frame("Spot the Difference",
-                                              f"{num_puzzles} Puzzles - Can You Find Them All?")
-        frames.append((intro_frame, 3))
-
-        # Countdown
-        for i in range(3, 0, -1):
-            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
-            frames.append((countdown_frame, 1))
-
-        puzzles_generated = 0
-        for idx in range(num_puzzles):
-            prompt = scene_prompts[idx % len(scene_prompts)]
-            print(f"Generating AI puzzle {idx + 1}/{num_puzzles}: {prompt[:50]}...")
-
-            try:
-                # Generate base and modified images using Pollinations.ai
-                base_img, modified_img, seed = ai_gen.generate_spot_difference_pair(
-                    prompt, difficulty=difficulty
-                )
-
-                # Resize to fit our video layout
-                base_img = base_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
-                modified_img = modified_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
-
-                puzzles_generated += 1
-
-            except Exception as e:
-                print(f"  AI generation failed: {e}, skipping puzzle")
-                continue
-
-            # Puzzle title
-            title_frame = self.create_title_frame(f"Puzzle {puzzles_generated}",
-                                                  f"Find the differences!")
-            frames.append((title_frame, 2))
-
-            # Detect differences for reveal
-            if difficulty == 'easy':
-                diff_locations = self.detect_differences(base_img, modified_img, min_area=300, max_regions=8)
-            else:  # medium and hard both have ~3 differences (hard ones are just more subtle)
-                diff_locations = self.detect_differences(base_img, modified_img, min_area=400, max_regions=5)
-            num_found = len(diff_locations)
-
-            # Puzzle with timer
-            for sec in range(puzzle_time, 0, -1):
-                puzzle_frame = self.create_comparison_frame(
-                    base_img, modified_img,
-                    title=f"Puzzle {puzzles_generated}",
-                    num_differences=num_found if num_found > 0 else num_differences,
-                    show_timer=sec
-                )
-                frames.append((puzzle_frame, 1))
-
-            # Reveal with circles around differences
-            reveal_frame = self.create_comparison_frame(
-                base_img, modified_img,
-                title=f"Answer - {num_found} Differences Found!",
-                highlight_locations=diff_locations if diff_locations else None
-            )
-            frames.append((reveal_frame, reveal_time))
-
-        if puzzles_generated == 0:
-            raise RuntimeError("Failed to generate any puzzles")
-
-        # Final outro
-        outro_frame = self.create_title_frame("Great Job!", "Thanks for playing!")
-        frames.append((outro_frame, 3))
-
-        return self.save_video_fast(frames, output_filename)
-
     def generate_with_sd(self, num_puzzles=5, scene_prompts=None,
-                         num_differences=5, puzzle_time=15, reveal_time=5,
+                         num_differences=3, puzzle_time=15, reveal_time=5,
                          output_filename="spot_difference_sd.mp4"):
-        """
-        Generate Spot the Difference video using local Stable Diffusion.
-
-        Args:
-            num_puzzles: Number of puzzles to generate
-            scene_prompts: List of scene descriptions for image generation
-            num_differences: Target number of differences
-            puzzle_time: Seconds to show each puzzle
-            reveal_time: Seconds to show answer
-            output_filename: Output file name
-        """
+        """Generate Spot the Difference video using local Stable Diffusion."""
         import torch
         from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 
-        # Default prompts for variety
         default_prompts = [
-            "a cozy living room with fireplace and bookshelves, warm lighting, detailed interior design",
-            "a beautiful garden with colorful flowers and stone path, sunny day, professional photography",
-            "a modern kitchen with fruits and vegetables on counter, clean and organized",
-            "a child's bedroom with toys and stuffed animals, colorful and playful",
-            "a beach scene with palm trees and beach chairs, tropical paradise",
-            "a mountain landscape with lake reflection, peaceful nature scene",
-            "a busy city street with shops and cafes, urban photography",
-            "a forest clearing with mushrooms and flowers, fairy tale setting",
-            "a vintage classroom with chalkboard and wooden desks, nostalgic",
-            "a bakery display with cakes and pastries, appetizing food photography",
+            "a cozy living room with fireplace and bookshelves, warm lighting, cartoon style, colorful illustration",
+            "a beautiful garden with colorful flowers and stone path, cartoon illustration style",
+            "a modern kitchen with fruits and vegetables on counter, cartoon style illustration",
+            "a child's bedroom with toys and stuffed animals, colorful cartoon style",
+            "a beach scene with palm trees and beach chairs, cartoon illustration",
+            "a mountain landscape with lake reflection, illustrated cartoon style",
+            "a busy city street with shops and cafes, cartoon illustration",
+            "a forest clearing with mushrooms and flowers, fairy tale cartoon style",
+            "a vintage classroom with chalkboard and desks, cartoon illustration",
+            "a bakery display with cakes and pastries, colorful cartoon style",
         ]
 
         if not scene_prompts:
-            import random
             scene_prompts = random.sample(default_prompts, min(num_puzzles, len(default_prompts)))
 
-        # Load SD pipeline
         print("Loading Stable Diffusion...")
         model_path = os.path.expanduser("~/stable-diffusion-webui/models/Stable-diffusion/sd_v1.5.safetensors")
 
@@ -630,7 +438,6 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
             torch_dtype=torch.float16
         ).to("cuda")
 
-        # Also load img2img for creating variations
         img2img = StableDiffusionImg2ImgPipeline(
             vae=pipe.vae,
             text_encoder=pipe.text_encoder,
@@ -643,20 +450,12 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         ).to("cuda")
 
         frames = []
+        puzzle_labels = ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+                        "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH"]
 
-        # Calculate image size for side-by-side display
-        img_width = (self.width - 120) // 2
-        img_height = self.height - 200
-
-        # Intro
-        intro_frame = self.create_title_frame("Spot the Difference",
-                                              f"{num_puzzles} Puzzles - Can You Find Them All?")
-        frames.append((intro_frame, 3))
-
-        # Countdown
-        for i in range(3, 0, -1):
-            countdown_frame = self.create_countdown_frame(i, "Get Ready!")
-            frames.append((countdown_frame, 1))
+        # Intro frames
+        intro_frame = self.create_intro_frame(num_puzzles, num_differences)
+        frames.append((intro_frame, 4))
 
         puzzles_generated = 0
         for idx in range(num_puzzles):
@@ -664,13 +463,12 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
             print(f"Generating SD puzzle {idx + 1}/{num_puzzles}: {prompt[:50]}...")
 
             try:
-                # Generate base image
                 seed = random.randint(0, 2**32 - 1)
                 generator = torch.Generator("cuda").manual_seed(seed)
 
                 base_result = pipe(
                     prompt,
-                    negative_prompt="blurry, low quality, distorted, ugly",
+                    negative_prompt="blurry, low quality, distorted, ugly, realistic, photograph",
                     num_inference_steps=25,
                     generator=generator,
                     width=512,
@@ -678,66 +476,144 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                 )
                 base_img = base_result.images[0]
 
-                # Create modified version using img2img with slight variation
-                mod_generator = torch.Generator("cuda").manual_seed(seed + 1)
-
-                modified_result = img2img(
-                    prompt=prompt + ", slightly different details",
-                    image=base_img,
-                    strength=0.3,  # Lower = more similar to original
-                    negative_prompt="blurry, low quality, distorted",
-                    num_inference_steps=20,
-                    generator=mod_generator,
-                )
-                modified_img = modified_result.images[0]
-
-                # Resize to fit our video layout
-                base_img = base_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
-                modified_img = modified_img.resize((img_width, img_height), Image.Resampling.LANCZOS)
+                # Create modified version with guaranteed visible differences
+                modified_img, diff_locations = self.create_modified_image(base_img, num_differences)
 
                 puzzles_generated += 1
+                label = puzzle_labels[puzzles_generated - 1] if puzzles_generated <= 10 else f"#{puzzles_generated}"
 
             except Exception as e:
                 print(f"  SD generation failed: {e}, skipping puzzle")
                 continue
 
-            # Puzzle title
-            title_frame = self.create_title_frame(f"Puzzle {puzzles_generated}",
-                                                  f"Find the differences!")
-            frames.append((title_frame, 2))
+            # Transition screen
+            transition = self.create_challenge_transition(puzzles_generated, num_puzzles)
+            frames.append((transition, 2))
 
-            # Detect differences for reveal
-            diff_locations = self.detect_differences(base_img, modified_img, min_area=300, max_regions=8)
-            num_found = len(diff_locations)
-
-            # Puzzle with timer
-            for sec in range(puzzle_time, 0, -1):
-                puzzle_frame = self.create_comparison_frame(
+            # Puzzle frames (no circles)
+            for sec in range(puzzle_time):
+                puzzle_frame = self.create_branded_frame(
                     base_img, modified_img,
-                    title=f"Puzzle {puzzles_generated}",
-                    num_differences=num_found if num_found > 0 else num_differences,
-                    show_timer=sec
+                    puzzle_label=label,
+                    show_circles=False
                 )
                 frames.append((puzzle_frame, 1))
 
-            # Reveal with circles around differences
-            reveal_frame = self.create_comparison_frame(
+            # Reveal frames (with circles appearing)
+            reveal_frame = self.create_branded_frame(
                 base_img, modified_img,
-                title=f"Answer - {num_found} Differences Found!",
-                highlight_locations=diff_locations if diff_locations else None
+                puzzle_label=label,
+                show_circles=True,
+                circle_locations=diff_locations
             )
             frames.append((reveal_frame, reveal_time))
 
         if puzzles_generated == 0:
             raise RuntimeError("Failed to generate any puzzles")
 
-        # Clean up GPU memory
         del pipe
         del img2img
         torch.cuda.empty_cache()
 
-        # Final outro
-        outro_frame = self.create_title_frame("Great Job!", "Thanks for playing!")
+        # Outro
+        outro_frame = self.create_intro_frame(puzzles_generated, num_differences)
+        draw = ImageDraw.Draw(outro_frame)
+        draw.rectangle([0, 0, self.width, self.height], fill=self.brand_blue)
+        outro_font = self._get_font(70)
+        self.add_text(outro_frame, "Great Job!", (self.width // 2, self.height // 2 - 50),
+                     font=outro_font, color=self.brand_gold)
+        self.add_text(outro_frame, "Thanks for playing!", (self.width // 2, self.height // 2 + 50),
+                     font=self._get_font(50), color=(255, 255, 255))
         frames.append((outro_frame, 3))
+
+        return self.save_video_fast(frames, output_filename)
+
+    def generate(self, image_path, num_differences=3, puzzle_time=10,
+                 reveal_time=5, output_filename="spot_difference.mp4"):
+        """Generate a Spot the Difference video from a user-provided image."""
+        frames = []
+
+        print(f"Loading image: {image_path}")
+        original_img = self.load_and_resize_image(image_path)
+
+        print(f"Creating {num_differences} differences...")
+        modified_img, change_locations = self.create_modified_image(original_img, num_differences)
+
+        # Intro
+        intro_frame = self.create_intro_frame(1, num_differences)
+        frames.append((intro_frame, 3))
+
+        # Transition
+        transition = self.create_challenge_transition(1, 1)
+        frames.append((transition, 2))
+
+        # Puzzle frames
+        for sec in range(puzzle_time):
+            puzzle_frame = self.create_branded_frame(
+                original_img, modified_img,
+                puzzle_label="CHALLENGE",
+                show_circles=False
+            )
+            frames.append((puzzle_frame, 1))
+
+        # Reveal
+        reveal_frame = self.create_branded_frame(
+            original_img, modified_img,
+            puzzle_label="ANSWER",
+            show_circles=True,
+            circle_locations=change_locations
+        )
+        frames.append((reveal_frame, reveal_time))
+
+        # Outro
+        outro = Image.new('RGB', (self.width, self.height), self.brand_blue)
+        self.add_text(outro, "Did you find them all?", (self.width // 2, self.height // 2),
+                     font=self._get_font(60), color=self.brand_gold)
+        frames.append((outro, 3))
+
+        return self.save_video_fast(frames, output_filename)
+
+    def generate_batch(self, image_paths, num_differences=3, puzzle_time=10,
+                       reveal_time=5, output_filename="spot_difference_batch.mp4"):
+        """Generate a video with multiple Spot the Difference puzzles."""
+        frames = []
+        puzzle_labels = ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+                        "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH"]
+
+        intro_frame = self.create_intro_frame(len(image_paths), num_differences)
+        frames.append((intro_frame, 3))
+
+        for idx, image_path in enumerate(image_paths, 1):
+            print(f"Processing image {idx}/{len(image_paths)}: {image_path}")
+            label = puzzle_labels[idx - 1] if idx <= 10 else f"#{idx}"
+
+            original_img = self.load_and_resize_image(image_path)
+            modified_img, change_locations = self.create_modified_image(original_img, num_differences)
+
+            transition = self.create_challenge_transition(idx, len(image_paths))
+            frames.append((transition, 2))
+
+            for sec in range(puzzle_time):
+                puzzle_frame = self.create_branded_frame(
+                    original_img, modified_img,
+                    puzzle_label=label,
+                    show_circles=False
+                )
+                frames.append((puzzle_frame, 1))
+
+            reveal_frame = self.create_branded_frame(
+                original_img, modified_img,
+                puzzle_label=label,
+                show_circles=True,
+                circle_locations=change_locations
+            )
+            frames.append((reveal_frame, reveal_time))
+
+        outro = Image.new('RGB', (self.width, self.height), self.brand_blue)
+        self.add_text(outro, "Great Job!", (self.width // 2, self.height // 2 - 30),
+                     font=self._get_font(70), color=self.brand_gold)
+        self.add_text(outro, "Thanks for playing!", (self.width // 2, self.height // 2 + 50),
+                     font=self._get_font(50), color=(255, 255, 255))
+        frames.append((outro, 3))
 
         return self.save_video_fast(frames, output_filename)

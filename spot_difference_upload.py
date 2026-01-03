@@ -154,28 +154,32 @@ def generate_title(num_puzzles):
     """Generate a catchy title."""
     import random
     templates = [
-        f"Spot The Difference - {num_puzzles} Puzzles! Can You Find Them All?",
-        f"Find The Differences Challenge - {num_puzzles} Levels!",
-        f"🔍 Spot The Difference - Only 1% Can Find All!",
-        f"Visual Puzzle Challenge - {num_puzzles} Spot The Difference Games",
-        f"Brain Test: Find The Differences - {num_puzzles} Puzzles",
-        f"Can You Spot All Differences? {num_puzzles} Puzzle Challenge!",
+        f"IMPOSSIBLE Spot The Difference - {num_puzzles} HARD Puzzles!",
+        f"Find ALL 5 Differences - Only Geniuses Can! {num_puzzles} Levels",
+        f"99% FAIL This Spot The Difference Challenge!",
+        f"EXTREME Spot The Difference - Can You Beat It?",
+        f"Genius IQ Test: Find The Hidden Differences - {num_puzzles} Puzzles",
+        f"The HARDEST Spot The Difference You'll Ever See!",
     ]
     return random.choice(templates)
 
 def generate_description(num_puzzles):
     """Generate video description."""
-    return f"""🔍 Spot The Difference Challenge!
+    return f"""🔍 EXTREME Spot The Difference Challenge!
 
-Can you find all the differences in these {num_puzzles} puzzles?
+Can you find ALL 5 hidden differences in these {num_puzzles} HARD puzzles?
 
-Test your observation skills with this fun visual puzzle game!
+🧠 This is NOT your average spot the difference game - these are TINY, SUBTLE changes!
 
-⏱️ Each puzzle has a timer - try to find all differences before time runs out!
+⏱️ You have 100 SECONDS per puzzle - you'll need every second!
 
-👀 Pay close attention to every detail!
+👁️ Look VERY carefully at every pixel - the differences are almost invisible!
 
-#SpotTheDifference #Puzzle #BrainGame #FindTheDifference #VisualPuzzle
+🏆 Only TRUE geniuses can find them all!
+
+Comment below how many you found! 👇
+
+#SpotTheDifference #Puzzle #BrainGame #FindTheDifference #IQTest #HardPuzzle #Genius
 """
 
 def main():
@@ -197,8 +201,10 @@ def main():
     output_path = os.path.join(VIDEO_GEN_PATH, "output", output_filename)
 
     num_puzzles = 5
+    puzzle_time = 100  # 100 seconds per puzzle (harder)
+    reveal_time = 8    # More time to see answers
 
-    log(f"Generating {num_puzzles} puzzle video with Stable Diffusion...")
+    log(f"Generating {num_puzzles} puzzle video with Stable Diffusion (hard mode)...")
 
     # Python script to run with SD venv
     gen_script = f'''
@@ -209,8 +215,9 @@ from generators import SpotDifferenceGenerator
 gen = SpotDifferenceGenerator()
 gen.generate_with_sd(
     num_puzzles={num_puzzles},
-    puzzle_time=15,
-    reveal_time=5,
+    puzzle_time={puzzle_time},
+    reveal_time={reveal_time},
+    num_differences=5,  # More differences to find
     output_filename="{output_filename}"
 )
 print("VIDEO_GENERATED")
