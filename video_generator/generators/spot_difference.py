@@ -291,17 +291,17 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
         return frame
 
-    def create_modified_image(self, original_img, num_changes=3, hard_mode=True):
-        """Create a modified version of the image with specified number of changes.
+    def create_modified_image(self, original_img, num_changes=3, hard_mode=False):
+        """Create a modified version of the image with OBVIOUS, visible differences.
 
-        hard_mode: If True, creates smaller and more subtle differences that are harder to spot.
+        Like Captain Brain style - whole objects removed or colors completely changed.
         """
         modified = original_img.copy()
         img_width, img_height = modified.size
 
-        # Use finer grid for harder mode - more potential locations
-        grid_cols = 5 if hard_mode else 3
-        grid_rows = 5 if hard_mode else 3
+        # Use 3x3 grid for big, obvious regions
+        grid_cols = 3
+        grid_rows = 3
         cell_width = img_width // grid_cols
         cell_height = img_height // grid_rows
 
@@ -310,40 +310,32 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
         change_locations = []
 
-        # Hard mode uses only subtle modifications
-        if hard_mode:
-            modification_types = [
-                'subtle_color', 'subtle_blur', 'subtle_brightness',
-                'remove_small', 'tiny_shape', 'subtle_hue'
-            ]
-        else:
-            modification_types = [
-                'color_shift', 'blur_region', 'brightness_change',
-                'remove_region', 'add_shape', 'flip_region', 'tint_region'
-            ]
+        # OBVIOUS modifications only - things you can see immediately
+        modification_types = [
+            'remove_object',      # Fill region with background color (object disappears)
+            'color_swap',         # Completely change color (red→blue, not subtle)
+            'add_object',         # Add a visible colored shape
+            'invert_colors',      # Invert the colors in region
+            'remove_object',      # Higher chance of removal (most obvious)
+        ]
 
         for i, (row, col) in enumerate(change_cells):
-            # Smaller regions for hard mode (25-35 pixels vs 40-80 pixels)
-            if hard_mode:
-                region_size = random.randint(25, 35)
-                x1 = col * cell_width + random.randint(5, cell_width - region_size - 5)
-                y1 = row * cell_height + random.randint(5, cell_height - region_size - 5)
-                x2 = x1 + region_size
-                y2 = y1 + region_size
-            else:
-                x1 = col * cell_width + cell_width // 4
-                y1 = row * cell_height + cell_height // 4
-                x2 = x1 + cell_width // 2
-                y2 = y1 + cell_height // 2
+            # BIG regions - 60-100 pixels so changes are visible
+            region_size = random.randint(60, 100)
+            x1 = col * cell_width + random.randint(10, max(11, cell_width - region_size - 10))
+            y1 = row * cell_height + random.randint(10, max(11, cell_height - region_size - 10))
+            x2 = x1 + region_size
+            y2 = y1 + region_size
 
-            x1 = max(10, min(x1, img_width - 40))
-            y1 = max(10, min(y1, img_height - 40))
-            x2 = max(x1 + 20, min(x2, img_width - 10))
-            y2 = max(y1 + 20, min(y2, img_height - 10))
+            # Keep within bounds
+            x1 = max(5, min(x1, img_width - region_size - 5))
+            y1 = max(5, min(y1, img_height - region_size - 5))
+            x2 = min(x2, img_width - 5)
+            y2 = min(y2, img_height - 5)
 
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
-            radius = max(x2 - x1, y2 - y1) // 2 + 8
+            radius = max(x2 - x1, y2 - y1) // 2 + 15
 
             change_locations.append((center_x, center_y, radius))
 
@@ -353,39 +345,69 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         return modified, change_locations
 
     def _apply_modification(self, img, region, mod_type):
-        """Apply a specific modification to a region of the image."""
+        """Apply an OBVIOUS modification to a region of the image."""
         x1, y1, x2, y2 = region
         region_img = img.crop((x1, y1, x2, y2))
+        w, h = region_img.size
 
-        if mod_type == 'color_shift':
+        if mod_type == 'remove_object':
+            # Sample colors from edges to fill (makes object "disappear")
+            edge_colors = []
+            for x in range(w):
+                edge_colors.append(region_img.getpixel((x, 0)))
+                edge_colors.append(region_img.getpixel((x, h-1)))
+            for y in range(h):
+                edge_colors.append(region_img.getpixel((0, y)))
+                edge_colors.append(region_img.getpixel((w-1, y)))
+            # Average edge color
+            avg_r = sum(c[0] for c in edge_colors) // len(edge_colors)
+            avg_g = sum(c[1] for c in edge_colors) // len(edge_colors)
+            avg_b = sum(c[2] for c in edge_colors) // len(edge_colors)
+            region_img = Image.new('RGB', (w, h), (avg_r, avg_g, avg_b))
+
+        elif mod_type == 'color_swap':
+            # Completely swap color channels for dramatic change
             r, g, b = region_img.split()
-            region_img = Image.merge('RGB', (g, b, r))
-        elif mod_type == 'blur_region':
-            region_img = region_img.filter(ImageFilter.GaussianBlur(radius=8))
-        elif mod_type == 'brightness_change':
-            enhancer = ImageEnhance.Brightness(region_img)
-            region_img = enhancer.enhance(random.choice([0.4, 1.8]))
-        elif mod_type == 'remove_region':
-            edge_color = img.getpixel((x1, y1))
-            region_img = Image.new('RGB', region_img.size, edge_color)
-        elif mod_type == 'add_shape':
-            draw = ImageDraw.Draw(region_img)
-            shape_color = random.choice([
-                (255, 100, 100), (100, 255, 100), (100, 100, 255),
-                (255, 255, 100), (255, 100, 255), (100, 255, 255)
-            ])
-            w, h = region_img.size
-            shape = random.choice(['ellipse', 'rectangle'])
-            if shape == 'ellipse':
-                draw.ellipse((w//4, h//4, 3*w//4, 3*h//4), fill=shape_color)
+            swap = random.choice(['rgb_to_bgr', 'rgb_to_grb', 'invert_one'])
+            if swap == 'rgb_to_bgr':
+                region_img = Image.merge('RGB', (b, g, r))
+            elif swap == 'rgb_to_grb':
+                region_img = Image.merge('RGB', (g, r, b))
             else:
-                draw.rectangle((w//4, h//4, 3*w//4, 3*h//4), fill=shape_color)
-        elif mod_type == 'flip_region':
-            region_img = region_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        elif mod_type == 'tint_region':
-            tint_color = random.choice([(255, 0, 0), (0, 255, 0), (0, 0, 255)])
-            tint_layer = Image.new('RGB', region_img.size, tint_color)
-            region_img = Image.blend(region_img, tint_layer, 0.5)
+                # Invert just one channel for obvious but natural-ish change
+                from PIL import ImageOps
+                r = ImageOps.invert(r)
+                region_img = Image.merge('RGB', (r, g, b))
+
+        elif mod_type == 'add_object':
+            # Add a bright, obvious colored shape
+            draw = ImageDraw.Draw(region_img)
+            bright_colors = [
+                (255, 50, 50),    # Bright red
+                (50, 255, 50),    # Bright green
+                (50, 50, 255),    # Bright blue
+                (255, 255, 50),   # Yellow
+                (255, 50, 255),   # Magenta
+                (50, 255, 255),   # Cyan
+                (255, 150, 50),   # Orange
+            ]
+            color = random.choice(bright_colors)
+            shape = random.choice(['circle', 'star', 'square'])
+            cx, cy = w // 2, h // 2
+            size = min(w, h) // 3
+
+            if shape == 'circle':
+                draw.ellipse([cx-size, cy-size, cx+size, cy+size], fill=color)
+            elif shape == 'square':
+                draw.rectangle([cx-size, cy-size, cx+size, cy+size], fill=color)
+            else:  # star - draw as overlapping triangles
+                draw.polygon([(cx, cy-size), (cx+size, cy+size), (cx-size, cy+size)], fill=color)
+                draw.polygon([(cx, cy+size), (cx+size, cy-size), (cx-size, cy-size)], fill=color)
+
+        elif mod_type == 'invert_colors':
+            # Full color inversion - very obvious
+            from PIL import ImageOps
+            region_img = ImageOps.invert(region_img)
 
         result = img.copy()
         result.paste(region_img, (x1, y1))
@@ -399,16 +421,16 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 
         default_prompts = [
-            "a cozy living room with fireplace and bookshelves, warm lighting, cartoon style, colorful illustration",
-            "a beautiful garden with colorful flowers and stone path, cartoon illustration style",
-            "a modern kitchen with fruits and vegetables on counter, cartoon style illustration",
-            "a child's bedroom with toys and stuffed animals, colorful cartoon style",
-            "a beach scene with palm trees and beach chairs, cartoon illustration",
-            "a mountain landscape with lake reflection, illustrated cartoon style",
-            "a busy city street with shops and cafes, cartoon illustration",
-            "a forest clearing with mushrooms and flowers, fairy tale cartoon style",
-            "a vintage classroom with chalkboard and desks, cartoon illustration",
-            "a bakery display with cakes and pastries, colorful cartoon style",
+            "cozy living room with bookshelf armchair and table, bold black outlines, flat colors, cartoon illustration, children's book art style",
+            "colorful garden with flowers watering can and butterflies, bold outlines, flat cartoon colors, illustration",
+            "kitchen scene with fruits pots and window, bold black outlines, flat colors, cartoon style illustration",
+            "child bedroom with bed toys and lamp, bold outlines, colorful flat cartoon illustration",
+            "beach scene with umbrella sandcastle and seagulls, bold black outlines, flat cartoon colors",
+            "park with trees bench and pond with ducks, bold outlines, flat colors, cartoon illustration",
+            "bakery shop with cakes bread and counter, bold black outlines, flat cartoon colors, illustration",
+            "zoo scene with animals and visitors, bold outlines, colorful flat cartoon style",
+            "classroom with desks chalkboard and globe, bold black outlines, flat cartoon illustration",
+            "playground with swings slide and children, bold outlines, flat colors, cartoon style",
         ]
 
         if not scene_prompts:
@@ -452,7 +474,7 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
                 base_result = pipe(
                     prompt,
-                    negative_prompt="blurry, low quality, distorted, ugly, realistic, photograph",
+                    negative_prompt="blurry, low quality, distorted, ugly, realistic, photograph, 3d render, photorealistic, gradient shading, soft edges",
                     num_inference_steps=25,
                     generator=generator,
                     width=512,
