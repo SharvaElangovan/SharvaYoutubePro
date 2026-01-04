@@ -455,124 +455,116 @@ class BaseVideoGenerator:
         raise NotImplementedError("Subclasses must implement generate()")
 
     def generate_thumbnail(self, title, subtitle="", output_path=None, category=None):
-        """Generate an eye-catching, high-CTR thumbnail for the video."""
+        """Generate a high-CTR thumbnail with image collage like successful quiz channels."""
         import random
+        import requests
+        from io import BytesIO
+        import urllib.parse
 
         if output_path is None:
             output_path = os.path.join(self.output_dir, "thumbnail.jpg")
 
-        # Vibrant color schemes that pop in YouTube feeds
-        color_schemes = [
-            {"top": (220, 20, 60), "bottom": (139, 0, 0), "accent": (255, 215, 0)},      # Red/Gold
-            {"top": (0, 100, 200), "bottom": (0, 50, 120), "accent": (0, 255, 255)},     # Blue/Cyan
-            {"top": (255, 140, 0), "bottom": (200, 80, 0), "accent": (255, 255, 0)},     # Orange/Yellow
-            {"top": (0, 180, 80), "bottom": (0, 100, 50), "accent": (255, 255, 0)},      # Green/Yellow
-            {"top": (148, 0, 211), "bottom": (75, 0, 130), "accent": (255, 100, 255)},   # Purple/Pink
-            {"top": (255, 20, 147), "bottom": (139, 0, 139), "accent": (255, 255, 0)},   # Pink/Yellow
-        ]
-        scheme = random.choice(color_schemes)
-
-        # Category-specific emojis
-        emoji_map = {
-            "geography": ["🌍", "🗺️", "🌎"],
-            "science": ["🔬", "🧪", "⚗️"],
-            "history": ["📜", "⏳", "🏛️"],
-            "sports": ["⚽", "🏆", "🎯"],
-            "movies": ["🎬", "🎥", "🍿"],
-            "music": ["🎵", "🎸", "🎤"],
-            "food": ["🍕", "🍔", "🍳"],
-            "animals": ["🦁", "🐘", "🦊"],
-            "technology": ["💻", "🤖", "📱"],
-            "math": ["🔢", "➗", "📐"],
+        # Category-specific image prompts for collage
+        image_prompts = {
+            "general": ["Einstein portrait", "world map globe", "Eiffel Tower", "Coca Cola bottle", "pyramids Egypt", "Homer Simpson cartoon"],
+            "geography": ["world map", "Eiffel Tower", "Great Wall China", "Statue Liberty", "pyramids", "Mount Everest"],
+            "science": ["DNA helix", "atom model", "Einstein", "telescope", "microscope", "space rocket"],
+            "history": ["pyramids Egypt", "Roman Colosseum", "medieval castle", "World War plane", "ancient Greek temple", "Viking ship"],
+            "movies": ["movie clapperboard", "Oscar statue", "popcorn bucket", "film reel", "Hollywood sign", "red carpet"],
+            "music": ["electric guitar", "piano keys", "microphone", "vinyl record", "headphones", "music notes"],
+            "sports": ["soccer ball", "basketball", "Olympic rings", "trophy cup", "tennis racket", "football"],
+            "food": ["pizza slice", "hamburger", "sushi roll", "birthday cake", "coffee cup", "ice cream cone"],
+            "animals": ["lion face", "elephant", "dolphin", "eagle flying", "panda bear", "tiger"],
         }
-        default_emojis = ["🧠", "❓", "💡", "🤔", "🎯"]
 
-        if category and category.lower() in emoji_map:
-            emoji = random.choice(emoji_map[category.lower()])
-        else:
-            emoji = random.choice(default_emojis)
+        # Get prompts for category or use general
+        cat_key = category.lower() if category and category.lower() in image_prompts else "general"
+        prompts = image_prompts[cat_key]
+        random.shuffle(prompts)
 
-        # Clickbait hooks that drive CTR
-        hooks = [
-            "99% FAIL This Quiz!",
-            "IMPOSSIBLE Quiz!",
-            "Only Geniuses Score 100%",
-            "Can YOU Beat This?",
-            "Test Your Brain!",
-            "Are You Smarter Than Most?",
-            "Nobody Gets 10/10!",
-            "Ultimate Challenge!",
-        ]
-        hook = random.choice(hooks)
+        # Fetch 6 images for collage using Pollinations.ai
+        print("  Generating thumbnail collage images...")
+        collage_images = []
+        for i, prompt in enumerate(prompts[:6]):
+            try:
+                full_prompt = f"{prompt}, icon style, colorful, white background, simple"
+                encoded = urllib.parse.quote(full_prompt)
+                url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&seed={random.randint(1,99999)}"
+                response = requests.get(url, timeout=30)
+                if response.status_code == 200:
+                    img = Image.open(BytesIO(response.content)).convert('RGB')
+                    collage_images.append(img.resize((256, 256), Image.Resampling.LANCZOS))
+            except Exception as e:
+                print(f"    Failed to fetch image {i+1}: {e}")
 
-        # Create gradient background
-        pixels = np.zeros((720, 1280, 3), dtype=np.uint8)
-        for y in range(720):
-            ratio = y / 720
-            r = int(scheme["top"][0] * (1 - ratio) + scheme["bottom"][0] * ratio)
-            g = int(scheme["top"][1] * (1 - ratio) + scheme["bottom"][1] * ratio)
-            b = int(scheme["top"][2] * (1 - ratio) + scheme["bottom"][2] * ratio)
-            pixels[y, :] = [r, g, b]
-
-        img = Image.fromarray(pixels, 'RGB')
+        # Create base thumbnail (1280x720)
+        img = Image.new('RGB', (1280, 720), (30, 30, 50))
         draw = ImageDraw.Draw(img)
 
-        # Add diagonal stripes for visual interest
-        for i in range(-720, 1280, 120):
-            draw.polygon([(i, 720), (i + 60, 720), (i + 780, 0), (i + 720, 0)],
-                        fill=(255, 255, 255, 30))
+        # Arrange collage images in 2 rows of 3
+        if len(collage_images) >= 6:
+            positions = [
+                (0, 100), (256, 100), (512, 100),      # Top row
+                (0, 356), (256, 356), (512, 356),      # Bottom row
+            ]
+            for pos_img, pos in zip(collage_images[:6], positions):
+                # Add colored border to each image
+                border_color = random.choice([(255,50,50), (50,255,50), (50,50,255), (255,255,50), (255,50,255)])
+                bordered = Image.new('RGB', (266, 266), border_color)
+                bordered.paste(pos_img, (5, 5))
+                img.paste(bordered, (pos[0], pos[1]))
 
-        # Glow effect behind emoji (circle)
-        for radius in range(120, 60, -10):
-            alpha = int(50 * (120 - radius) / 60)
-            draw.ellipse([640 - radius, 160 - radius, 640 + radius, 160 + radius],
-                        fill=(255, 255, 255, alpha) if alpha < 50 else None,
-                        outline=(255, 255, 255))
+        # Right side: solid color panel for text
+        draw.rectangle([768, 0, 1280, 720], fill=(20, 60, 120))
 
-        # Big emoji
-        self.add_text(img, emoji, (640, 160),
-                     font=self._get_font(200), color=(255, 255, 255))
+        # Add diagonal accent
+        draw.polygon([(768, 0), (850, 0), (768, 720), (768, 720)], fill=(30, 80, 150))
 
-        # Hook text with thick outline (multiple shadow passes)
-        hook_font = self._get_font(70)
-        for dx in range(-5, 6, 2):
-            for dy in range(-5, 6, 2):
-                self.add_text(img, hook, (640 + dx, 330 + dy),
-                             font=hook_font, color=(0, 0, 0))
-        self.add_text(img, hook, (640, 330),
-                     font=hook_font, color=scheme["accent"])
+        # Title text - BIG and BOLD
+        title_parts = title.upper().split()
+        if len(title_parts) >= 2:
+            line1 = " ".join(title_parts[:len(title_parts)//2])
+            line2 = " ".join(title_parts[len(title_parts)//2:])
+        else:
+            line1 = title.upper()
+            line2 = ""
 
-        # Title with shadow
-        title_display = title[:35] if len(title) > 35 else title
-        title_font = self._get_font(65)
-        for dx, dy in [(-3, -3), (3, -3), (-3, 3), (3, 3), (0, 4)]:
-            self.add_text(img, title_display, (640 + dx, 450 + dy),
-                         font=title_font, color=(0, 0, 0))
-        self.add_text(img, title_display, (640, 450),
-                     font=title_font, color=(255, 255, 255))
+        # Main title with thick outline
+        title_font = self._get_font(75)
+        for dx in range(-4, 5, 2):
+            for dy in range(-4, 5, 2):
+                self.add_text(img, line1[:18], (1024 + dx, 180 + dy), font=title_font, color=(0, 0, 0))
+        self.add_text(img, line1[:18], (1024, 180), font=title_font, color=(255, 255, 0))
 
-        # Subtitle
-        if subtitle:
-            self.add_text(img, subtitle[:45], (640, 530),
-                         font=self._get_font(45), color=(200, 200, 200))
+        if line2:
+            for dx in range(-4, 5, 2):
+                for dy in range(-4, 5, 2):
+                    self.add_text(img, line2[:18], (1024 + dx, 270 + dy), font=title_font, color=(0, 0, 0))
+            self.add_text(img, line2[:18], (1024, 270), font=title_font, color=(255, 255, 255))
 
-        # CTA badge with glow
-        badge_color = (255, 50, 50)
-        # Glow
-        for expand in range(15, 0, -3):
-            draw.rounded_rectangle([380 - expand, 580 - expand, 900 + expand, 690 + expand],
-                                  radius=25, outline=(255, 100, 100))
-        draw.rounded_rectangle([380, 580, 900, 690], radius=25, fill=badge_color)
+        # Hook text
+        hooks = ["EVERYONE", "SHOULD KNOW!", "99% FAIL!", "TEST YOURSELF!"]
+        hook = random.choice(hooks)
+        hook_font = self._get_font(55)
+        for dx in range(-3, 4, 2):
+            for dy in range(-3, 4, 2):
+                self.add_text(img, hook, (1024 + dx, 400 + dy), font=hook_font, color=(0, 0, 0))
+        self.add_text(img, hook, (1024, 400), font=hook_font, color=(255, 200, 50))
 
-        # CTA text
-        cta_options = ["▶ PLAY NOW", "🎯 START QUIZ", "⚡ TAKE THE CHALLENGE"]
-        cta = random.choice(cta_options)
-        self.add_text(img, cta, (640, 635),
-                     font=self._get_font(48), color=(255, 255, 255))
+        # Question count badge
+        draw.rounded_rectangle([870, 500, 1180, 600], radius=20, fill=(255, 50, 50))
+        badge_font = self._get_font(50)
+        self.add_text(img, "50 QUESTIONS", (1025, 550), font=badge_font, color=(255, 255, 255))
 
-        # Corner decorations
-        draw.polygon([(0, 0), (150, 0), (0, 150)], fill=scheme["accent"])
-        draw.polygon([(1280, 0), (1130, 0), (1280, 150)], fill=scheme["accent"])
+        # Bottom banner
+        draw.rectangle([0, 650, 1280, 720], fill=(255, 200, 0))
+        banner_font = self._get_font(45)
+        self.add_text(img, "▶ PLAY NOW - HOW MANY CAN YOU GET?", (640, 685), font=banner_font, color=(0, 0, 0))
+
+        # Top banner with title
+        draw.rectangle([0, 0, 1280, 100], fill=(255, 50, 50))
+        top_font = self._get_font(60)
+        self.add_text(img, "GENERAL KNOWLEDGE", (384, 50), font=top_font, color=(255, 255, 255))
 
         img.save(output_path, quality=95)
         return output_path
