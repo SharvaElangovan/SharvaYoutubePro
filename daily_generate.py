@@ -22,8 +22,8 @@ LOG_FILE = os.path.join(SCRIPT_DIR, "daily_generate.log")
 sys.path.insert(0, VIDEO_GEN_PATH)
 
 # How many videos to generate
-LONGFORM_COUNT = 10
-SHORTS_COUNT = 10
+LONGFORM_COUNT = 50
+SHORTS_COUNT = 50
 
 def log(msg):
     """Log message to file and stdout."""
