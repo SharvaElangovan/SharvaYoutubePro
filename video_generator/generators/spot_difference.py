@@ -606,12 +606,41 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                       reveal_time=5, output_filename="spot_difference_auto.mp4"):
         """Generate Spot the Difference video using local Stable Diffusion.
 
-        Uses RTX 4000 GPU for high quality image generation.
+        Uses RTX 4000 GPU via SD venv subprocess.
         """
-        return self.generate_with_sd(
-            num_puzzles=num_puzzles,
-            num_differences=num_differences,
-            puzzle_time=puzzle_time,
-            reveal_time=reveal_time,
-            output_filename=output_filename
+        import subprocess
+
+        sd_python = os.path.expanduser("~/stable-diffusion-webui/venv/bin/python")
+        video_gen_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_path = os.path.join(video_gen_path, "output", output_filename)
+
+        gen_script = f'''
+import sys
+sys.path.insert(0, "{video_gen_path}")
+from generators import SpotDifferenceGenerator
+
+gen = SpotDifferenceGenerator()
+gen.generate_with_sd(
+    num_puzzles={num_puzzles},
+    num_differences={num_differences},
+    puzzle_time={puzzle_time},
+    reveal_time={reveal_time},
+    output_filename="{output_filename}"
+)
+print("VIDEO_GENERATED")
+'''
+
+        print(f"Running Stable Diffusion via subprocess...")
+        result = subprocess.run(
+            [sd_python, "-c", gen_script],
+            capture_output=True,
+            text=True,
+            cwd=video_gen_path
         )
+
+        if "VIDEO_GENERATED" in result.stdout:
+            print("Video generated successfully!")
+            return output_path
+        else:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            raise RuntimeError(f"SD generation failed: {error_msg}")
