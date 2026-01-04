@@ -482,8 +482,19 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                 )
                 base_img = base_result.images[0]
 
-                # Create modified version with guaranteed visible differences
-                modified_img, diff_locations = self.create_modified_image(base_img, num_differences)
+                # Use img2img to create natural variations with SD
+                # Lower strength = fewer changes, higher = more changes
+                modified_result = img2img(
+                    prompt=prompt + ", slightly different details, minor variations",
+                    image=base_img,
+                    strength=0.35,  # 35% change - enough to see but keeps structure
+                    num_inference_steps=20,
+                    generator=torch.Generator("cuda").manual_seed(seed + 1),
+                )
+                modified_img = modified_result.images[0]
+
+                # Detect where differences are for the reveal circles
+                diff_locations = self.detect_differences(base_img, modified_img, min_area=300)
 
                 puzzles_generated += 1
                 label = puzzle_labels[puzzles_generated - 1] if puzzles_generated <= 10 else f"#{puzzles_generated}"
