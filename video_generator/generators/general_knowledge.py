@@ -133,12 +133,30 @@ class GeneralKnowledgeGenerator(BaseVideoGenerator):
 
         # === QUESTION TEXT ===
         question_y = content_top + int(80 * s)
-        self.add_text_wrapped(frame, question, (self.width // 2, question_y),
-                             max_width=self.width - int(200 * s), font=self.font_large,
+        max_question_width = self.width - int(200 * s)
+
+        # Use smaller font for long questions to prevent overlap
+        question_font = self.font_large
+        if len(question) > 100:
+            question_font = self.font_medium
+        if len(question) > 180:
+            question_font = self.font_small
+
+        # Calculate question text height to position options below it
+        question_bbox = self.add_text_wrapped(frame, question, (self.width // 2, question_y),
+                             max_width=max_question_width, font=question_font,
                              color=self.question_color)
 
+        # Get the bottom of the question text (add_text_wrapped returns bbox)
+        question_bottom = question_y + int(120 * s)  # Default estimate
+        if question_bbox:
+            # question_bbox is (x1, y1, x2, y2)
+            question_bottom = question_bbox[3] + int(40 * s)  # Add padding below question
+
         # === VERTICAL 1x4 ANSWER LIST ===
-        options_start_y = content_top + int(320 * s)  # More space for longer questions
+        # Position options below question text, with minimum position
+        min_options_y = content_top + int(280 * s)
+        options_start_y = max(min_options_y, question_bottom)
         box_margin = int(150 * s)  # Left/right margin
         box_width = self.width - box_margin * 2
         box_height = int(85 * s)

@@ -204,16 +204,22 @@ class BaseVideoGenerator:
         if current_line:
             lines.append(' '.join(current_line))
 
-        # Draw lines
+        # Draw lines and track bounding box
         x, y = position
+        start_y = y
+        max_line_width = 0
+        line_height = 0
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             line_width = bbox[2] - bbox[0]
             line_height = bbox[3] - bbox[1]
+            max_line_width = max(max_line_width, line_width)
             draw.text((x - line_width // 2, y), line, font=font, fill=color)
             y += line_height + line_spacing
 
-        return img
+        # Return bounding box of all text (x1, y1, x2, y2)
+        text_bbox = (x - max_line_width // 2, start_y, x + max_line_width // 2, y - line_spacing if lines else y)
+        return text_bbox
 
     def add_rounded_rectangle(self, img, bbox, radius, fill_color, outline_color=None, outline_width=3):
         """Add a rounded rectangle to an image."""
