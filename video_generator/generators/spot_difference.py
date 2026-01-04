@@ -477,8 +477,8 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                     negative_prompt="blurry, low quality, distorted, ugly, realistic, photograph, 3d render, photorealistic, gradient shading, soft edges",
                     num_inference_steps=25,
                     generator=generator,
-                    width=512,
-                    height=512,
+                    width=768,
+                    height=768,
                 )
                 base_img = base_result.images[0]
 
