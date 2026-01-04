@@ -969,12 +969,92 @@ def generate_batch_videos(video_type='short', count=5, parallel=2):
     return generated
 
 
+def upload_from_queue():
+    """Upload pre-generated videos from the queue folder."""
+    queue_dir = os.path.join(SCRIPT_DIR, "upload_queue")
+    if not os.path.exists(queue_dir):
+        return 0, 0, False  # shorts, longform, limit_reached
+
+    queue_files = [f for f in os.listdir(queue_dir) if f.endswith('.json')]
+    if not queue_files:
+        log("No videos in queue")
+        return 0, 0, False
+
+    log(f"Found {len(queue_files)} videos in upload queue")
+
+    shorts_uploaded = 0
+    longform_uploaded = 0
+
+    for meta_file in sorted(queue_files):
+        meta_path = os.path.join(queue_dir, meta_file)
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+
+            video_path = meta['video_path']
+            thumb_path = meta.get('thumb_path')
+            video_type = meta.get('video_type', 'longform')
+            question_count = meta.get('question_count', 50)
+            category = meta.get('category', 'General Knowledge')
+
+            if not os.path.exists(video_path):
+                log(f"  Video not found: {video_path}, removing from queue")
+                os.remove(meta_path)
+                continue
+
+            # Generate title/description
+            is_short = video_type == 'shorts'
+            if is_short:
+                title = f"Quick Quiz: {question_count} Questions! #shorts #quiz #trivia"
+                description = f"Test your knowledge with this quick {question_count}-question quiz!\n\n#shorts #quiz #trivia #generalknowledge"
+            else:
+                title = f"{category} Quiz - {question_count} Questions That Will Test Your Knowledge!"
+                description = f"Can you answer all {question_count} questions correctly?\n\nTest your {category.lower()} knowledge!\n\n#quiz #trivia #generalknowledge"
+
+            log(f"  Uploading queued {'short' if is_short else 'longform'}: {os.path.basename(video_path)}")
+
+            video_id, error = upload_with_retry(video_path, title, description, is_short)
+
+            if video_id:
+                if is_short:
+                    shorts_uploaded += 1
+                else:
+                    longform_uploaded += 1
+                # Remove from queue after successful upload
+                os.remove(meta_path)
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                if thumb_path and os.path.exists(thumb_path):
+                    os.remove(thumb_path)
+                log(f"  ✓ Uploaded: https://youtube.com/watch?v={video_id}")
+            elif error == "LIMIT_REACHED":
+                log("  YouTube limit reached during queue upload")
+                return shorts_uploaded, longform_uploaded, True
+
+            time.sleep(3)
+
+        except Exception as e:
+            log(f"  Error processing queue item {meta_file}: {e}")
+
+    return shorts_uploaded, longform_uploaded, False
+
+
 def main():
     log("=" * 60)
     log("DAILY UPLOAD SCRIPT STARTED (Alternating Short/Longform)")
     log("=" * 60)
 
-    send_discord_notification("🚀 **Daily upload started!**\nGenerating and uploading videos...", 0x00ff00)
+    send_discord_notification("🚀 **Daily upload started!**\nUploading videos...", 0x00ff00)
+
+    # First, upload any pre-generated videos from queue
+    log("\n--- Uploading from queue ---")
+    queue_shorts, queue_long, limit_hit = upload_from_queue()
+    log(f"Queue upload: {queue_shorts} shorts, {queue_long} longform")
+
+    if limit_hit:
+        log("Limit reached during queue upload, stopping")
+        send_discord_notification(f"✅ Queue upload done: {queue_shorts} shorts, {queue_long} longform (limit reached)", 0x00ff00)
+        return
 
     os.chdir(VIDEO_GEN_PATH)
 
