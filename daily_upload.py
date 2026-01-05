@@ -593,17 +593,16 @@ def generate_one_short(topic_cats, categories, cat_idx):
             title = TitleGenerator.generate_shorts_title(5, category=category)
             desc = TitleGenerator.generate_description(5, is_shorts=True, category=category)
 
-            # Generate thumbnail
-            first_question = questions[0].get('question', 'Quiz Time!')[:50]
-            generator.generate_thumbnail(first_question, thumbnail_path, category=category)
+            # Skip thumbnail generation to save time and quota
+            # (YouTube will auto-generate from video frame)
 
             video_id, error = upload_with_retry(output_path, title, desc, is_short=True)
             os.remove(output_path)
 
             if video_id:
-                # Upload thumbnail
+                # Skip thumbnail upload to save 50 quota units per video
+                # (allows 100 videos instead of 66 with 10,000 quota)
                 if os.path.exists(thumbnail_path):
-                    upload_thumbnail(video_id, thumbnail_path)
                     os.remove(thumbnail_path)
 
                 mark_used(ids)
@@ -659,17 +658,16 @@ def generate_one_longform(topic_cats, categories, cat_idx):
             title = TitleGenerator.generate_longform_title(50, category=category)
             desc = TitleGenerator.generate_description(50, is_shorts=False, category=category)
 
-            # Generate thumbnail
-            cat_text_thumb = f" {category}" if category else ""
-            generator.generate_thumbnail(f"50{cat_text_thumb} Quiz Questions", "Test Your Knowledge!", thumbnail_path, category=category)
+            # Skip thumbnail generation to save time and quota
+            # (YouTube will auto-generate from video frame)
 
             video_id, error = upload_with_retry(output_path, title, desc, is_short=False)
             os.remove(output_path)
 
             if video_id:
-                # Upload thumbnail
+                # Skip thumbnail upload to save 50 quota units per video
+                # (allows 100 videos instead of 66 with 10,000 quota)
                 if os.path.exists(thumbnail_path):
-                    upload_thumbnail(video_id, thumbnail_path)
                     os.remove(thumbnail_path)
 
                 mark_used(ids)
