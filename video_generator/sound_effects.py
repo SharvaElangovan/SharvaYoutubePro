@@ -3,6 +3,7 @@
 import os
 import subprocess
 import wave
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Piper TTS - fast local neural TTS
@@ -104,6 +105,7 @@ class TTSCache:
         os.makedirs(self.cache_dir, exist_ok=True)
         self._index_file = os.path.join(self.cache_dir, 'index.json')
         self._index = self._load_index()
+        self._lock = threading.Lock()  # Thread safety for parallel TTS
 
     def _load_index(self):
         """Load cache index from disk."""
@@ -130,13 +132,14 @@ class TTSCache:
     def get_cached(self, text):
         """Get cached TTS file path if exists."""
         text_hash = self._text_hash(text)
-        if text_hash in self._index:
-            cache_path = os.path.join(self.cache_dir, self._index[text_hash])
-            if os.path.exists(cache_path):
-                return cache_path
-            else:
-                # Cache file missing, remove from index
-                del self._index[text_hash]
+        with self._lock:
+            if text_hash in self._index:
+                cache_path = os.path.join(self.cache_dir, self._index[text_hash])
+                if os.path.exists(cache_path):
+                    return cache_path
+                else:
+                    # Cache file missing, remove from index
+                    del self._index[text_hash]
         return None
 
     def add_to_cache(self, text, audio_path):
@@ -148,8 +151,9 @@ class TTSCache:
 
         # Copy to cache
         shutil.copy2(audio_path, cache_path)
-        self._index[text_hash] = cache_filename
-        self._save_index()
+        with self._lock:
+            self._index[text_hash] = cache_filename
+            self._save_index()
         return cache_path
 
     def get_cache_stats(self):
