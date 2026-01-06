@@ -313,8 +313,8 @@ class SoundEffects:
             return []
 
         sys_info = _get_system_info()
-        # Limit to 4 workers to prevent system instability
-        max_workers = min(4, sys_info['cpu_cores'])
+        # Use 80% of CPU cores for faster TTS generation
+        max_workers = max(4, int(sys_info['cpu_cores'] * 0.8))
 
         print(f"  Generating {len(items)} TTS files in parallel ({max_workers} workers)...")
 
