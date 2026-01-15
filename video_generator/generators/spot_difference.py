@@ -420,17 +420,18 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
         import torch
         from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 
+        # Flat vector/clipart style prompts - like educational illustrations
         default_prompts = [
-            "cozy living room with bookshelf armchair and table, bold black outlines, flat colors, cartoon illustration, children's book art style",
-            "colorful garden with flowers watering can and butterflies, bold outlines, flat cartoon colors, illustration",
-            "kitchen scene with fruits pots and window, bold black outlines, flat colors, cartoon style illustration",
-            "child bedroom with bed toys and lamp, bold outlines, colorful flat cartoon illustration",
-            "beach scene with umbrella sandcastle and seagulls, bold black outlines, flat cartoon colors",
-            "park with trees bench and pond with ducks, bold outlines, flat colors, cartoon illustration",
-            "bakery shop with cakes bread and counter, bold black outlines, flat cartoon colors, illustration",
-            "zoo scene with animals and visitors, bold outlines, colorful flat cartoon style",
-            "classroom with desks chalkboard and globe, bold black outlines, flat cartoon illustration",
-            "playground with swings slide and children, bold outlines, flat colors, cartoon style",
+            "living room interior, couch bookshelf lamp table, flat vector illustration, simple clipart style, solid colors, no shading, 2D graphic design",
+            "garden scene, flowers butterflies watering can fence, flat vector art, clipart style, bold colors, no gradients, simple shapes",
+            "kitchen interior, pots fruits vegetables stove, flat 2D illustration, vector clipart, solid flat colors, minimal detail",
+            "bedroom scene, bed lamp toys window, simple vector illustration, flat clipart style, bold solid colors, 2D graphic",
+            "beach scene, umbrella sandcastle bucket seagull, flat vector art, simple clipart, solid colors, no shading",
+            "park scene, trees bench pond ducks playground, flat 2D vector, clipart illustration, bold simple colors",
+            "bakery shop, cakes bread display counter, flat vector illustration, simple clipart style, solid colors",
+            "zoo animals, elephant giraffe monkey cage, flat 2D clipart, vector art style, bold colors, simple shapes",
+            "classroom interior, desks chalkboard globe books, flat vector illustration, clipart style, solid colors",
+            "playground scene, swings slide sandbox children, simple flat vector, 2D clipart art, bold colors",
         ]
 
         if not scene_prompts:
@@ -472,9 +473,10 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                 seed = random.randint(0, 2**32 - 1)
                 generator = torch.Generator("cuda").manual_seed(seed)
 
+                # Generate flat vector/clipart style base image
                 base_result = pipe(
                     prompt,
-                    negative_prompt="blurry, low quality, distorted, ugly, realistic, photograph, 3d render, photorealistic, gradient shading, soft edges",
+                    negative_prompt="realistic, photograph, 3d render, photorealistic, gradient, shading, shadows, detailed, complex, blurry, disney, pixar, anime",
                     num_inference_steps=25,
                     generator=generator,
                     width=768,
@@ -482,19 +484,26 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
                 )
                 base_img = base_result.images[0]
 
-                # Use img2img to create natural variations with SD
-                # Lower strength = fewer changes, higher = more changes
+                # Use img2img to create variations - then we'll add manual differences
+                # Low strength to keep the flat style consistent
                 modified_result = img2img(
-                    prompt=prompt + ", slightly different details, minor variations",
+                    prompt=prompt + ", minor object variations",
+                    negative_prompt="realistic, photograph, 3d, gradient, shading, shadows",
                     image=base_img,
-                    strength=0.35,  # 35% change - enough to see but keeps structure
+                    strength=0.25,  # 25% - subtle changes, keeps flat style
                     num_inference_steps=20,
                     generator=torch.Generator("cuda").manual_seed(seed + 1),
                 )
                 modified_img = modified_result.images[0]
 
-                # Detect where differences are for the reveal circles
+                # Add manual obvious differences on top of SD variations
+                modified_img, manual_locations = self.create_modified_image(modified_img, num_differences)
+
+                # Detect all differences for reveal circles
                 diff_locations = self.detect_differences(base_img, modified_img, min_area=300)
+                # Use manual locations if detection failed
+                if len(diff_locations) < num_differences:
+                    diff_locations = manual_locations
 
                 puzzles_generated += 1
                 label = puzzle_labels[puzzles_generated - 1] if puzzles_generated <= 10 else f"#{puzzles_generated}"
