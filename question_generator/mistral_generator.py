@@ -11,8 +11,154 @@ import time
 import urllib.request
 import urllib.error
 import random
+import re
 
 DB_PATH = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db'
+
+# =============================================================================
+# FACT VALIDATION DATABASE
+# Format: (keyword_pattern, correct_answer_must_contain)
+# If question matches pattern and answer doesn't contain correct text, reject it
+# =============================================================================
+KNOWN_FACTS = {
+    # Capitals - common mistakes
+    'capital.*france': 'paris',
+    'capital.*japan': 'tokyo',
+    'capital.*australia': 'canberra',
+    'capital.*germany': 'berlin',
+    'capital.*italy': 'rome',
+    'capital.*spain': 'madrid',
+    'capital.*brazil': 'brasilia',
+    'capital.*canada': 'ottawa',
+    'capital.*india': 'delhi',
+    'capital.*china': 'beijing',
+    'capital.*russia': 'moscow',
+    'capital.*uk|capital.*united kingdom|capital.*britain': 'london',
+    'capital.*turkey': 'ankara',
+    'capital.*egypt': 'cairo',
+    'capital.*mexico': 'mexico city',
+    'capital.*switzerland': 'bern',
+    'capital.*poland': 'warsaw',
+    'capital.*south korea': 'seoul',
+    'capital.*vietnam': 'hanoi',
+    'capital.*thailand': 'bangkok',
+
+    # Planets (not "second largest" etc)
+    'largest planet(?!.*second)': 'jupiter',
+    'smallest planet': 'mercury',
+    'closest.*sun(?!.*second)': 'mercury',
+    'hottest planet': 'venus',
+    'red planet': 'mars',
+
+    # Geography
+    'largest ocean(?!.*second)': 'pacific',
+    'largest continent(?!.*second)': 'asia',
+    'smallest continent': 'australia',
+    'longest river.*africa': 'nile',
+    'highest mountain.*world(?!.*second)': 'everest',
+    'highest mountain.*africa': 'kilimanjaro',
+    'highest mountain.*north america': 'denali',
+    'highest mountain.*europe': 'elbrus|mont blanc',
+    'largest country(?!.*second)': 'russia',
+    'largest desert(?!.*second)': 'sahara|antarctic',
+
+    # Science
+    'chemical symbol.*gold': 'au',
+    'chemical symbol.*silver': 'ag',
+    'chemical symbol.*iron': 'fe',
+    'chemical symbol.*sodium': 'na',
+    'chemical symbol.*potassium': 'k(?![a-z])',
+    'chemical symbol.*oxygen': 'o(?![a-z])',
+    'chemical symbol.*hydrogen': 'h(?![a-z])',
+    'chemical symbol.*water': 'h2o',
+    'atomic number.*hydrogen': '1(?![0-9])',
+    'atomic number.*helium': '2(?![0-9])',
+    'atomic number.*carbon': '6(?![0-9])',
+    'atomic number.*oxygen': '8(?![0-9])',
+
+    # Human body
+    'largest organ.*body|largest organ.*human': 'skin',
+    'largest bone': 'femur',
+    'smallest bone': 'stapes|stirrup',
+    'bones.*human.*adult|how many bones': '206',
+
+    # Animals
+    'largest animal(?!.*land)': 'whale',
+    'largest land animal': 'elephant',
+    'fastest land animal': 'cheetah',
+    'tallest animal': 'giraffe',
+    'largest bird': 'ostrich',
+
+    # Basic facts
+    'boiling point.*water.*celsius': '100',
+    'freezing point.*water.*celsius': '0',
+    'speed of light': '299|300',  # ~299,792 km/s or ~300,000 km/s
+
+    # Math
+    'square root.*144': '12',
+    'square root.*100': '10',
+    'square root.*81': '9',
+    'square root.*64': '8',
+    'square root.*49': '7',
+    'square root.*36': '6',
+    'square root.*25': '5',
+    'square root.*16': '4',
+    'square root.*9(?![0-9])': '3',
+    'square root.*4(?![0-9])': '2',
+}
+
+# Patterns that indicate "What am I" riddles - reject these
+RIDDLE_PATTERNS = [
+    r'what am i\??$',
+    r'i have .* what am i',
+    r'i am .* what am i',
+    r"i'm .* what am i",
+]
+
+
+def validate_factual_accuracy(question, options, answer_idx):
+    """
+    Validate that the answer is factually correct for known facts.
+    Returns (is_valid, reason)
+    """
+    q_lower = question.lower()
+    answer = str(options[answer_idx]).lower() if 0 <= answer_idx < len(options) else ""
+
+    # Check against known facts
+    for pattern, correct_must_contain in KNOWN_FACTS.items():
+        if re.search(pattern, q_lower):
+            # This question matches a known fact pattern
+            if not re.search(correct_must_contain, answer, re.IGNORECASE):
+                # Answer doesn't contain the correct value
+                # Check if correct answer exists in any option
+                correct_option_idx = None
+                for i, opt in enumerate(options):
+                    if re.search(correct_must_contain, str(opt).lower()):
+                        correct_option_idx = i
+                        break
+
+                if correct_option_idx is not None:
+                    return False, f"Wrong answer: {answer}. Should contain: {correct_must_contain}"
+                else:
+                    return False, f"Correct answer ({correct_must_contain}) not in options"
+
+    # Check for riddle patterns - reject these
+    for riddle_pattern in RIDDLE_PATTERNS:
+        if re.search(riddle_pattern, q_lower):
+            return False, "Riddle question (What am I) - rejected"
+
+    # Check for duplicate/similar options (sign of low quality)
+    opts_lower = [str(o).lower().strip() for o in options]
+    if len(set(opts_lower)) < 4:
+        return False, "Duplicate options detected"
+
+    # Check if answer option is too similar to question (often wrong)
+    if answer in q_lower and len(answer) > 3:
+        return False, "Answer appears in question"
+
+    return True, "OK"
+
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 TOPICS = [
@@ -123,9 +269,15 @@ def save_to_database(questions, topic):
                 continue
 
             # Check for bad patterns
-            bad_patterns = ['Unknown', 'Not applicable', 'None of', 'All of the above']
+            bad_patterns = ['Unknown', 'Not applicable', 'None of', 'All of the above', 'N/A']
             if any(bad in str(options) for bad in bad_patterns):
                 print(f"    Skip: bad pattern in options")
+                continue
+
+            # FACT VALIDATION - Check if answer is factually correct
+            is_valid, reason = validate_factual_accuracy(question_text, options, answer_idx)
+            if not is_valid:
+                print(f"    Skip: {reason}")
                 continue
 
             # Check duplicate

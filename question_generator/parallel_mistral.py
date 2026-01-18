@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Parallel Mistral Generator - Runs multiple generators concurrently
+With fact-checking validation to prevent wrong answers.
 """
 
 import json
@@ -10,13 +11,76 @@ import urllib.request
 import random
 import threading
 import sys
+import re
 
 DB_PATH = '/home/sharva/.local/share/com.sharva.youtube-pro/sharva_youtube_pro.db'
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
-# All topics combined
+# =============================================================================
+# FACT VALIDATION DATABASE - Prevents common AI mistakes
+# =============================================================================
+KNOWN_FACTS = {
+    # Capitals
+    'capital.*france': 'paris', 'capital.*japan': 'tokyo', 'capital.*australia': 'canberra',
+    'capital.*germany': 'berlin', 'capital.*italy': 'rome', 'capital.*spain': 'madrid',
+    'capital.*brazil': 'brasilia', 'capital.*canada': 'ottawa', 'capital.*india': 'delhi',
+    'capital.*china': 'beijing', 'capital.*russia': 'moscow', 'capital.*turkey': 'ankara',
+    'capital.*uk|capital.*britain': 'london', 'capital.*egypt': 'cairo',
+    # Planets
+    'largest planet(?!.*second)': 'jupiter', 'smallest planet': 'mercury',
+    'closest.*sun(?!.*second)': 'mercury', 'hottest planet': 'venus', 'red planet': 'mars',
+    # Geography
+    'largest ocean(?!.*second)': 'pacific', 'largest continent(?!.*second)': 'asia',
+    'smallest continent': 'australia', 'longest river.*africa': 'nile',
+    'highest mountain.*world(?!.*second)': 'everest', 'highest mountain.*africa': 'kilimanjaro',
+    'largest country(?!.*second)': 'russia', 'largest desert(?!.*second)': 'sahara|antarctic',
+    # Science
+    'chemical symbol.*gold': 'au', 'chemical symbol.*silver': 'ag', 'chemical symbol.*iron': 'fe',
+    'atomic number.*oxygen': '8(?![0-9])', 'atomic number.*carbon': '6(?![0-9])',
+    # Body
+    'largest organ': 'skin', 'largest bone': 'femur', 'bones.*human.*adult': '206',
+    # Animals
+    'largest animal(?!.*land)': 'whale', 'fastest land animal': 'cheetah',
+    'tallest animal': 'giraffe', 'largest bird': 'ostrich',
+    # Math
+    'square root.*144': '12', 'square root.*100': '10', 'square root.*81': '9',
+    'square root.*64': '8', 'square root.*49': '7', 'square root.*36': '6',
+}
+
+BAD_PATTERNS = ['Unknown', 'Not applicable', 'None of', 'All of the above', 'N/A']
+RIDDLE_PATTERNS = [r'what am i\??$', r'i have .* what am i', r'i am .* what am i']
+
+
+def validate_question(question, options, answer_idx):
+    """Validate factual accuracy. Returns (is_valid, reason)."""
+    q_lower = question.lower()
+    answer = str(options[answer_idx]).lower() if 0 <= answer_idx < len(options) else ""
+
+    # Reject riddles
+    for pattern in RIDDLE_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Riddle rejected"
+
+    # Check bad patterns in options
+    opts_str = str(options)
+    if any(bad in opts_str for bad in BAD_PATTERNS):
+        return False, "Bad pattern in options"
+
+    # Check facts
+    for pattern, correct in KNOWN_FACTS.items():
+        if re.search(pattern, q_lower):
+            if not re.search(correct, answer, re.IGNORECASE):
+                return False, f"Wrong fact: {answer}"
+
+    # Duplicate options check
+    if len(set(str(o).lower().strip() for o in options)) < 4:
+        return False, "Duplicate options"
+
+    return True, "OK"
+
+
+# Topics (NO riddle topics - they produce bad questions)
 TOPICS = [
-    # General Knowledge
     "Science", "History", "Geography", "Mathematics", "Literature",
     "Music", "Movies", "Sports", "Technology", "Nature",
     "Space", "Animals", "Food", "Art", "Politics",
@@ -25,10 +89,6 @@ TOPICS = [
     "Fashion", "Inventions", "World Records", "Famous People", "Languages",
     "Computers", "Internet", "Video Games", "Television", "Books",
     "Oceans", "Mountains", "Rivers", "Countries", "Capitals",
-    # Riddles topics
-    "everyday objects", "household items", "weather", "time", "tools",
-    "vehicles", "fruits", "vegetables", "clothing", "sports equipment",
-    "musical instruments", "school supplies", "kitchen items", "furniture", "electronics"
 ]
 
 PROMPT_TRIVIA = """Generate 10 trivia questions about {topic}.
@@ -36,26 +96,21 @@ Rules:
 - Each question MUST have EXACTLY 4 options
 - Options must be 1-5 words each
 - No "True/False" or "None of the above"
+- Make sure the answer is FACTUALLY CORRECT
 Output ONLY JSON: [{{"question":"What is X?","options":["A","B","C","D"],"answer":0}}]"""
-
-PROMPT_RIDDLE = """Generate 10 clever riddles about {topic}.
-Rules:
-- Each riddle must be a "What am I?" style riddle
-- Give 4 possible answers, only 1 correct
-- Keep riddles under 100 characters
-Output ONLY JSON: [{{"question":"I have hands but cannot clap. What am I?","options":["Clock","Gloves","Tree","Robot"],"answer":0}}]"""
 
 db_lock = threading.Lock()
 stats = {"generated": 0, "saved": 0, "errors": 0}
 stats_lock = threading.Lock()
 
-def generate(topic, is_riddle=False):
-    prompt = (PROMPT_RIDDLE if is_riddle else PROMPT_TRIVIA).format(topic=topic)
+def generate(topic):
+    """Generate trivia questions using Mistral."""
+    prompt = PROMPT_TRIVIA.format(topic=topic)
     payload = {
         "model": "mistral",
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.9, "num_predict": 4096}
+        "options": {"temperature": 0.8, "num_predict": 4096}
     }
     try:
         data = json.dumps(payload).encode('utf-8')
@@ -79,7 +134,9 @@ def parse(response_text):
     return []
 
 def save(questions):
+    """Save questions to database with validation."""
     saved = 0
+    rejected = 0
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -88,16 +145,29 @@ def save(questions):
                 text = q.get('question', '').strip()
                 opts = q.get('options', [])
                 ans = q.get('answer', 0)
+
+                # Basic validation
                 if not isinstance(ans, int) or ans < 0 or ans > 3:
                     ans = 0
                 if not text or len(opts) != 4 or len(text) > 200:
                     continue
+                if not text.endswith('?'):
+                    continue
                 if any(len(str(o)) > 80 for o in opts):
                     continue
+
+                # FACT VALIDATION - reject incorrect answers
+                is_valid, reason = validate_question(text, opts, ans)
+                if not is_valid:
+                    rejected += 1
+                    continue
+
+                # Check duplicate
                 cur.execute("SELECT id FROM question_bank WHERE question = ?", (text,))
                 if cur.fetchone():
                     continue
-                cur.execute('''INSERT INTO question_bank 
+
+                cur.execute('''INSERT INTO question_bank
                     (question, option_a, option_b, option_c, option_d, correct_answer, topic_id, difficulty, source, times_used)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                     (text, str(opts[0]), str(opts[1]), str(opts[2]), str(opts[3]), ans, 1, 1, 'mistral', 0))
@@ -109,14 +179,14 @@ def save(questions):
     return saved
 
 def worker(worker_id, stop_event):
+    """Worker thread that generates and saves questions."""
     while not stop_event.is_set():
         topic = random.choice(TOPICS)
-        is_riddle = random.random() < 0.3  # 30% riddles
-        
-        response = generate(topic, is_riddle)
+
+        response = generate(topic)
         with stats_lock:
             stats["generated"] += 1
-        
+
         if response:
             questions = parse(response)
             if questions:
@@ -126,7 +196,7 @@ def worker(worker_id, stop_event):
         else:
             with stats_lock:
                 stats["errors"] += 1
-        
+
         time.sleep(1)  # Small delay between requests
 
 def get_count():
