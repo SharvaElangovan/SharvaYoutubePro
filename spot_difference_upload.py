@@ -187,24 +187,34 @@ Comment below how many you found! 👇
 #SpotTheDifference #Puzzle #BrainGame #FindTheDifference #IQTest #HardPuzzle #Genius
 """
 
-def get_colab_images(count=5):
-    """Get pre-generated images from Colab sync folder."""
+def get_colab_pairs(count=5):
+    """Get pre-generated image pairs from Colab sync folder.
+
+    Looks for pairs: pair_001_original.png + pair_001_modified.png
+    Returns list of (original_path, modified_path) tuples.
+    """
     if not os.path.exists(COLAB_IMAGES_DIR):
         return []
-    images = sorted(glob.glob(os.path.join(COLAB_IMAGES_DIR, "*.png")))
-    if len(images) >= count:
-        selected = random.sample(images, count)
-        return selected
-    return images
+
+    originals = sorted(glob.glob(os.path.join(COLAB_IMAGES_DIR, "pair_*_original.png")))
+    pairs = []
+    for orig_path in originals:
+        mod_path = orig_path.replace("_original.png", "_modified.png")
+        if os.path.exists(mod_path):
+            pairs.append((orig_path, mod_path))
+
+    if len(pairs) >= count:
+        return random.sample(pairs, count)
+    return pairs
 
 
-def generate_with_colab_images(image_paths, output_filename, num_puzzles, puzzle_time, reveal_time):
-    """Generate video using pre-generated Colab images (no GPU needed)."""
+def generate_with_colab_pairs(image_pairs, output_filename, puzzle_time, reveal_time):
+    """Generate video using FLUX Kontext pre-made pairs (original + modified)."""
     from generators import SpotDifferenceGenerator
 
     gen = SpotDifferenceGenerator()
-    output_path = gen.generate_batch(
-        image_paths=image_paths,
+    output_path = gen.generate_from_pairs(
+        image_pairs=image_pairs,
         num_differences=5,
         puzzle_time=puzzle_time,
         reveal_time=reveal_time,
@@ -264,29 +274,30 @@ def main():
     puzzle_time = 100  # 100 seconds per puzzle
     reveal_time = 8
 
-    # Try Colab pre-generated images first (SDXL quality, no local GPU needed)
-    colab_images = get_colab_images(num_puzzles)
-    if len(colab_images) >= num_puzzles:
-        log(f"Using {len(colab_images)} pre-generated Colab images (SDXL)")
+    # Try Colab pre-generated pairs first (SDXL base + FLUX Kontext differences)
+    colab_pairs = get_colab_pairs(num_puzzles)
+    if len(colab_pairs) >= num_puzzles:
+        log(f"Using {len(colab_pairs)} Colab pairs (SDXL + FLUX Kontext)")
         try:
-            result_path = generate_with_colab_images(
-                colab_images, output_filename, num_puzzles, puzzle_time, reveal_time
+            result_path = generate_with_colab_pairs(
+                colab_pairs, output_filename, puzzle_time, reveal_time
             )
             if result_path and os.path.exists(result_path):
                 output_path = result_path
-                # Remove used images so they aren't reused
-                for img in colab_images:
-                    try:
-                        os.remove(img)
-                    except Exception:
-                        pass
-                log(f"Video generated from Colab images: {output_path}")
+                # Remove used pairs so they aren't reused
+                for orig, mod in colab_pairs:
+                    for f in (orig, mod):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
+                log(f"Video generated from Colab pairs: {output_path}")
             else:
-                log("Colab image video generation failed, falling back to local SD")
-                colab_images = []
+                log("Colab pair video generation failed, falling back to local SD")
+                colab_pairs = []
         except Exception as e:
-            log(f"Colab image generation error: {e}, falling back to local SD")
-            colab_images = []
+            log(f"Colab pair generation error: {e}, falling back to local SD")
+            colab_pairs = []
 
     # Fallback: local Stable Diffusion
     if not os.path.exists(output_path):

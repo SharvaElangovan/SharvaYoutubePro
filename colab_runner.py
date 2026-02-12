@@ -186,26 +186,32 @@ def sync_from_drive():
     )
 
     if result.returncode == 0:
-        # Count synced images
-        images = glob.glob(os.path.join(LOCAL_IMAGES_DIR, "*.png"))
-        log(f"Sync complete! {len(images)} images available locally")
+        # Count synced pairs
+        originals = glob.glob(os.path.join(LOCAL_IMAGES_DIR, "pair_*_original.png"))
+        modifieds = glob.glob(os.path.join(LOCAL_IMAGES_DIR, "pair_*_modified.png"))
+        log(f"Sync complete! {len(originals)} originals, {len(modifieds)} modified images")
         return True
     else:
         log(f"Sync failed: {result.stderr[:500]}")
         return False
 
 
-def get_available_images():
-    """Get list of unused images ready for video generation."""
+def get_available_pairs():
+    """Get list of complete image pairs ready for video generation."""
     if not os.path.exists(LOCAL_IMAGES_DIR):
         return []
-    images = sorted(glob.glob(os.path.join(LOCAL_IMAGES_DIR, "*.png")))
-    return images
+    originals = sorted(glob.glob(os.path.join(LOCAL_IMAGES_DIR, "pair_*_original.png")))
+    pairs = []
+    for orig_path in originals:
+        mod_path = orig_path.replace("_original.png", "_modified.png")
+        if os.path.exists(mod_path):
+            pairs.append((orig_path, mod_path))
+    return pairs
 
 
 def main():
     log("=" * 60)
-    log("COLAB RUNNER - Spot the Difference Image Generator")
+    log("COLAB RUNNER - SDXL + FLUX Kontext Image Pair Generator")
     log("=" * 60)
 
     sync_only = "--sync-only" in sys.argv
@@ -229,8 +235,8 @@ def main():
     sync_success = sync_from_drive()
 
     if sync_success:
-        images = get_available_images()
-        log(f"Ready: {len(images)} images available for spot-the-difference videos")
+        pairs = get_available_pairs()
+        log(f"Ready: {len(pairs)} complete pairs ({len(pairs) // 5} videos worth)")
     else:
         log("Sync failed - check rclone config")
 

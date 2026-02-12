@@ -644,6 +644,74 @@ class SpotDifferenceGenerator(BaseVideoGenerator):
 
         return self.save_video_fast(frames, output_filename)
 
+    def generate_from_pairs(self, image_pairs, num_differences=3, puzzle_time=10,
+                            reveal_time=5, output_filename="spot_difference_pairs.mp4"):
+        """Generate video from pre-made (original, modified) image pairs.
+
+        Args:
+            image_pairs: List of (original_path, modified_path) tuples.
+                         FLUX Kontext generates the modified versions with real differences.
+            num_differences: Used for intro text (how many to find).
+            puzzle_time: Seconds per puzzle.
+            reveal_time: Seconds to show answer.
+            output_filename: Output video filename.
+        """
+        frames = []
+        puzzle_labels = ["FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+                        "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH"]
+
+        intro_frame = self.create_intro_frame(len(image_pairs), num_differences)
+        frames.append((intro_frame, 3))
+
+        for idx, (orig_path, mod_path) in enumerate(image_pairs, 1):
+            print(f"Processing pair {idx}/{len(image_pairs)}: {os.path.basename(orig_path)}")
+            label = puzzle_labels[idx - 1] if idx <= 10 else f"#{idx}"
+
+            original_img = self.load_and_resize_image(orig_path)
+            modified_img = self.load_and_resize_image(mod_path)
+
+            # Detect actual pixel differences between the AI-generated pair
+            diff_locations = self.detect_differences(original_img, modified_img, min_area=300)
+
+            # If detection finds too few, fall back to grid-based circles
+            if len(diff_locations) < 2:
+                print(f"  Warning: only {len(diff_locations)} differences detected, adding grid circles")
+                w, h = original_img.size
+                for r in range(3):
+                    for c in range(3):
+                        cx = w // 6 + c * w // 3
+                        cy = h // 6 + r * h // 3
+                        diff_locations.append((cx, cy, 50))
+                diff_locations = diff_locations[:num_differences]
+
+            transition = self.create_challenge_transition(idx, len(image_pairs))
+            frames.append((transition, 2))
+
+            for sec in range(puzzle_time):
+                puzzle_frame = self.create_branded_frame(
+                    original_img, modified_img,
+                    puzzle_label=label,
+                    show_circles=False
+                )
+                frames.append((puzzle_frame, 1))
+
+            reveal_frame = self.create_branded_frame(
+                original_img, modified_img,
+                puzzle_label=label,
+                show_circles=True,
+                circle_locations=diff_locations
+            )
+            frames.append((reveal_frame, reveal_time))
+
+        outro = Image.new('RGB', (self.width, self.height), self.brand_blue)
+        self.add_text(outro, "Great Job!", (self.width // 2, self.height // 2 - 30),
+                     font=self._get_font(70), color=self.brand_gold)
+        self.add_text(outro, "Thanks for playing!", (self.width // 2, self.height // 2 + 50),
+                     font=self._get_font(50), color=(255, 255, 255))
+        frames.append((outro, 3))
+
+        return self.save_video_fast(frames, output_filename)
+
     def generate_auto(self, num_puzzles=5, num_differences=3, puzzle_time=10,
                       reveal_time=5, output_filename="spot_difference_auto.mp4"):
         """Generate Spot the Difference video using local Stable Diffusion.
