@@ -173,12 +173,16 @@ from diffusers.utils import load_image
 
 OUTPUT_DIR = '/content/drive/MyDrive/spot_difference_images'
 
-print("Loading FLUX Kontext (with CPU offloading for T4)...")
+print("Loading FLUX Kontext (fp16 + CPU offloading for T4)...")
+# T4 is Turing arch - native fp16 tensor cores, no native bfloat16
+# bfloat16 on T4 = software emulation = 3-5x slower
 pipe = FluxKontextPipeline.from_pretrained(
     "black-forest-labs/FLUX.1-Kontext-dev",
-    torch_dtype=torch.bfloat16,
+    torch_dtype=torch.float16,
 )
-pipe.enable_model_cpu_offload()  # Fits in 16GB T4 with offloading
+pipe.enable_model_cpu_offload()  # Moves layers to GPU one at a time (fits in 16GB)
+pipe.vae.enable_slicing()        # Process VAE in slices to save VRAM
+pipe.vae.enable_tiling()         # Tile-based VAE decode for large images
 
 # Edit instructions - FLUX makes smart, meaningful changes
 EDIT_INSTRUCTIONS = [
