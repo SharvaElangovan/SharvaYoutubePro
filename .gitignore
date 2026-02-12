@@ -39,6 +39,7 @@ question_generator/__pycache__/
 # Colab runner
 colab_runner_venv/
 spot_difference_images/
+chrome_selenium_profile/
 
 # Misc
 .DS_Store
