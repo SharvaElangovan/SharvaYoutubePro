@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Daily Spot the Difference Upload Script
-Generates and uploads Spot the Difference videos using local Stable Diffusion.
+Uses pre-generated images from Colab (Google Drive sync) or falls back to local SD.
 """
 
 import os
 import sys
 import json
+import glob
 import sqlite3
+import random
 import urllib.request
 import urllib.parse
 from datetime import datetime
@@ -16,7 +18,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEO_GEN_PATH = os.path.join(SCRIPT_DIR, "video_generator")
 sys.path.insert(0, VIDEO_GEN_PATH)
 
-# Use the SD venv for torch/diffusers
+# Pre-generated images from Colab (synced via rclone from Google Drive)
+COLAB_IMAGES_DIR = os.path.join(SCRIPT_DIR, "spot_difference_images")
+
+# Fallback: local SD venv
 SD_VENV = os.path.expanduser("~/stable-diffusion-webui/venv")
 SD_PYTHON = os.path.join(SD_VENV, "bin", "python")
 
@@ -182,31 +187,36 @@ Comment below how many you found! 👇
 #SpotTheDifference #Puzzle #BrainGame #FindTheDifference #IQTest #HardPuzzle #Genius
 """
 
-def main():
-    log("=" * 60)
-    log("SPOT THE DIFFERENCE DAILY UPLOAD")
-    log("=" * 60)
+def get_colab_images(count=5):
+    """Get pre-generated images from Colab sync folder."""
+    if not os.path.exists(COLAB_IMAGES_DIR):
+        return []
+    images = sorted(glob.glob(os.path.join(COLAB_IMAGES_DIR, "*.png")))
+    if len(images) >= count:
+        selected = random.sample(images, count)
+        return selected
+    return images
 
-    # Check for token
-    if not get_token():
-        log("ERROR: No YouTube token. Please authenticate via the app first.")
-        return
 
-    # Generate video using subprocess with SD venv
+def generate_with_colab_images(image_paths, output_filename, num_puzzles, puzzle_time, reveal_time):
+    """Generate video using pre-generated Colab images (no GPU needed)."""
+    from generators import SpotDifferenceGenerator
+
+    gen = SpotDifferenceGenerator()
+    output_path = gen.generate_batch(
+        image_paths=image_paths,
+        num_differences=5,
+        puzzle_time=puzzle_time,
+        reveal_time=reveal_time,
+        output_filename=output_filename,
+    )
+    return output_path
+
+
+def generate_with_local_sd(output_filename, num_puzzles, puzzle_time, reveal_time):
+    """Fallback: Generate video using local Stable Diffusion."""
     import subprocess
-    import tempfile
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = f"spot_diff_{timestamp}.mp4"
-    output_path = os.path.join(VIDEO_GEN_PATH, "output", output_filename)
-
-    num_puzzles = 5
-    puzzle_time = 100  # 100 seconds per puzzle (harder)
-    reveal_time = 8    # More time to see answers
-
-    log(f"Generating {num_puzzles} puzzle video with Stable Diffusion (hard mode)...")
-
-    # Python script to run with SD venv
     gen_script = f'''
 import sys
 sys.path.insert(0, "{VIDEO_GEN_PATH}")
@@ -217,7 +227,7 @@ gen.generate_with_sd(
     num_puzzles={num_puzzles},
     puzzle_time={puzzle_time},
     reveal_time={reveal_time},
-    num_differences=5,  # More differences to find
+    num_differences=5,
     output_filename="{output_filename}"
 )
 print("VIDEO_GENERATED")
@@ -227,12 +237,66 @@ print("VIDEO_GENERATED")
         [SD_PYTHON, "-c", gen_script],
         capture_output=True,
         text=True,
-        timeout=600  # 10 min timeout
+        timeout=600
     )
 
-    if "VIDEO_GENERATED" not in result.stdout and not os.path.exists(output_path):
-        log(f"Video generation failed: {result.stderr[:500]}")
+    output_path = os.path.join(VIDEO_GEN_PATH, "output", output_filename)
+    if "VIDEO_GENERATED" in result.stdout or os.path.exists(output_path):
+        return output_path
+    return None
+
+
+def main():
+    log("=" * 60)
+    log("SPOT THE DIFFERENCE DAILY UPLOAD")
+    log("=" * 60)
+
+    # Check for token
+    if not get_token():
+        log("ERROR: No YouTube token. Please authenticate via the app first.")
         return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"spot_diff_{timestamp}.mp4"
+    output_path = os.path.join(VIDEO_GEN_PATH, "output", output_filename)
+
+    num_puzzles = 5
+    puzzle_time = 100  # 100 seconds per puzzle
+    reveal_time = 8
+
+    # Try Colab pre-generated images first (SDXL quality, no local GPU needed)
+    colab_images = get_colab_images(num_puzzles)
+    if len(colab_images) >= num_puzzles:
+        log(f"Using {len(colab_images)} pre-generated Colab images (SDXL)")
+        try:
+            result_path = generate_with_colab_images(
+                colab_images, output_filename, num_puzzles, puzzle_time, reveal_time
+            )
+            if result_path and os.path.exists(result_path):
+                output_path = result_path
+                # Remove used images so they aren't reused
+                for img in colab_images:
+                    try:
+                        os.remove(img)
+                    except Exception:
+                        pass
+                log(f"Video generated from Colab images: {output_path}")
+            else:
+                log("Colab image video generation failed, falling back to local SD")
+                colab_images = []
+        except Exception as e:
+            log(f"Colab image generation error: {e}, falling back to local SD")
+            colab_images = []
+
+    # Fallback: local Stable Diffusion
+    if not os.path.exists(output_path):
+        log(f"Generating {num_puzzles} puzzles with local Stable Diffusion...")
+        result_path = generate_with_local_sd(output_filename, num_puzzles, puzzle_time, reveal_time)
+        if result_path:
+            output_path = result_path
+        else:
+            log("Video generation failed (both Colab and local SD)")
+            return
 
     if not os.path.exists(output_path):
         log("Video file not found after generation")
@@ -247,10 +311,10 @@ print("VIDEO_GENERATED")
     log(f"Uploading: {title}")
     video_id, error = upload_video(output_path, title, description)
 
-    # Clean up
+    # Clean up video
     try:
         os.remove(output_path)
-    except:
+    except Exception:
         pass
 
     if video_id:
