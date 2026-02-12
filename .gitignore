@@ -36,5 +36,9 @@ question_generator/__pycache__/
 *.jpg
 *.jpeg
 
+# Colab runner
+colab_runner_venv/
+spot_difference_images/
+
 # Misc
 .DS_Store

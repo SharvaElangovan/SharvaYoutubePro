@@ -38,7 +38,8 @@ GDRIVE_REMOTE = "gdrive:spot_difference_images"
 CHROME_PROFILE = os.path.expanduser("~/.config/google-chrome/Default")
 
 # How long to wait for Colab to finish (seconds)
-MAX_WAIT_TIME = 30 * 60  # 30 minutes
+# SDXL: ~15min for 50 images, FLUX Kontext: ~90min for 50 images with CPU offloading
+MAX_WAIT_TIME = 150 * 60  # 2.5 hours
 
 
 def log(msg):
