@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Daily YouTube Upload Script - Runs at quota reset
-Generates and uploads 25 long-form + 25 short-form videos
+Generates and uploads 15 shorts + 5 long-form videos (20 total)
 """
 
 import subprocess
@@ -1067,34 +1067,40 @@ def main():
 
     shorts_uploaded = 0
     longform_uploaded = 0
-    is_short_turn = True  # Start with a short
 
-    while True:
-        if is_short_turn:
-            success, short_cat_idx, error = generate_one_short(topic_cats, short_categories, short_cat_idx)
-            if success:
-                shorts_uploaded += 1
-            elif error == "LIMIT_REACHED":
-                log(f"YouTube limit reached! Shorts: {shorts_uploaded}, Longform: {longform_uploaded}")
-                break
-            elif error == "NO_QUESTIONS":
-                log("No more questions for shorts!")
-                is_short_turn = False
-                continue
-        else:
-            success, long_cat_idx, error = generate_one_longform(topic_cats, long_categories, long_cat_idx)
-            if success:
-                longform_uploaded += 1
-            elif error == "LIMIT_REACHED":
-                log(f"YouTube limit reached! Shorts: {shorts_uploaded}, Longform: {longform_uploaded}")
-                break
-            elif error == "NO_QUESTIONS":
-                log("No more questions for longform!")
-                is_short_turn = True
-                continue
+    # Daily limits: 15 shorts + 5 longform = 20 total
+    MAX_SHORTS = 15
+    MAX_LONGFORM = 5
 
-        # Alternate
-        is_short_turn = not is_short_turn
+    log(f"Target: {MAX_SHORTS} shorts + {MAX_LONGFORM} longform = {MAX_SHORTS + MAX_LONGFORM} total")
+
+    # Upload shorts first, then longform
+    while shorts_uploaded < MAX_SHORTS:
+        success, short_cat_idx, error = generate_one_short(topic_cats, short_categories, short_cat_idx)
+        if success:
+            shorts_uploaded += 1
+            log(f"  Progress: {shorts_uploaded}/{MAX_SHORTS} shorts")
+        elif error == "LIMIT_REACHED":
+            log(f"YouTube limit reached! Shorts: {shorts_uploaded}, Longform: {longform_uploaded}")
+            break
+        elif error == "NO_QUESTIONS":
+            log("No more questions for shorts!")
+            break
+
+        time.sleep(3)
+
+    while longform_uploaded < MAX_LONGFORM:
+        success, long_cat_idx, error = generate_one_longform(topic_cats, long_categories, long_cat_idx)
+        if success:
+            longform_uploaded += 1
+            log(f"  Progress: {longform_uploaded}/{MAX_LONGFORM} longform")
+        elif error == "LIMIT_REACHED":
+            log(f"YouTube limit reached! Shorts: {shorts_uploaded}, Longform: {longform_uploaded}")
+            break
+        elif error == "NO_QUESTIONS":
+            log("No more questions for longform!")
+            break
+
         time.sleep(3)
 
     log("=" * 60)
