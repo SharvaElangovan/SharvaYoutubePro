@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-MI300X Max-VRAM Image Generator
+MI300X Max-VRAM Image Generator (ROCm)
 
-Maximizes 192GB VRAM on AMD MI300X for mass parallel SDXL + FLUX generation.
+Maximizes 192GB HBM3 on AMD MI300X for mass parallel SDXL + FLUX generation.
+Built for ROCm/HIP — uses bfloat16 (native on MI300X), configures HIP memory
+allocator, enables flash attention via SDPA, and uses torch.compile() with
+Triton backend for ROCm kernel fusion.
+
 Loads each model ONCE, creates N lightweight pipeline clones sharing GPU weights,
-runs them in parallel threads across the MI300X's 8 compute dies.
+runs them in parallel threads across the MI300X's 8 XCDs (compute dies).
 Auto-detects optimal worker count to fill ~90% of free VRAM.
 
 Usage:
@@ -14,9 +18,18 @@ Usage:
     python mi300x_generator.py --target 1000  # generate 1000 pairs
 """
 
+# ── ROCm environment (must be set BEFORE importing torch) ───────────────
+import os
+
+# HIP memory allocator: expandable segments reduces fragmentation on MI300X
+os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
+# MI300X = gfx942 architecture
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "9.4.2")
+# Enable Triton flash attention for ROCm SDPA
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 import torch
 import gc
-import os
 import sys
 import copy
 import time
@@ -25,7 +38,6 @@ import argparse
 import threading
 from datetime import datetime
 from queue import Queue, Empty
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -35,6 +47,8 @@ SDXL_STEPS = 30
 FLUX_STEPS = 24
 SDXL_GUIDANCE = 7.5
 FLUX_GUIDANCE = 2.5
+# MI300X has native bfloat16 support — faster and more numerically stable than fp16
+DTYPE = torch.bfloat16
 
 # ── Scene prompts ───────────────────────────────────────────────────────
 SCENE_PROMPTS = [
@@ -109,13 +123,11 @@ EDIT_INSTRUCTIONS = [
 
 # ── Globals ─────────────────────────────────────────────────────────────
 print_lock = threading.Lock()
-save_lock = threading.Lock()
-pair_counter_lock = threading.Lock()
 stats = {"sdxl_done": 0, "flux_done": 0, "errors": 0, "start_time": 0}
 
 
 def get_vram_gb():
-    """Get total and free VRAM in GB."""
+    """Get total and free VRAM in GB via HIP (torch.cuda maps to HIP on ROCm)."""
     if torch.cuda.is_available():
         total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
         used = torch.cuda.memory_allocated(0) / (1024**3)
@@ -128,10 +140,43 @@ def log(msg):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def clone_sdxl(base_pipe, device="cuda"):
+def setup_rocm():
+    """Configure ROCm/HIP runtime for MI300X."""
+    if not torch.cuda.is_available():
+        log("ERROR: No GPU detected. Is ROCm installed?")
+        log("  Check: rocm-smi")
+        log("  Check: python -c \"import torch; print(torch.cuda.is_available())\"")
+        sys.exit(1)
+
+    gpu_name = torch.cuda.get_device_name(0)
+    log(f"GPU: {gpu_name}")
+
+    # Verify we're on ROCm, not CUDA
+    is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+    if is_rocm:
+        log(f"ROCm/HIP: {torch.version.hip}")
+    else:
+        log("WARNING: Running on CUDA, not ROCm. This script is optimized for MI300X/ROCm.")
+        log("  It will still work, but bfloat16 and HIP settings may differ.")
+
+    # Enable flash attention via scaled dot product attention (SDPA)
+    # On ROCm this uses the Triton flash attention backend
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    log("  Flash attention (SDPA): enabled")
+
+    total, free = get_vram_gb()
+    log(f"  VRAM: {total:.1f}GB total, {free:.1f}GB free")
+    log(f"  Dtype: bfloat16 (native MI300X)")
+    log(f"  HIP memory allocator: expandable_segments={os.environ.get('PYTORCH_HIP_ALLOC_CONF', 'default')}")
+
+    return is_rocm
+
+
+def clone_sdxl(base_pipe):
     """Create a lightweight SDXL pipeline clone sharing GPU model weights."""
     from diffusers import StableDiffusionXLPipeline
-    clone = StableDiffusionXLPipeline(
+    return StableDiffusionXLPipeline(
         unet=base_pipe.unet,
         vae=base_pipe.vae,
         text_encoder=base_pipe.text_encoder,
@@ -140,13 +185,12 @@ def clone_sdxl(base_pipe, device="cuda"):
         tokenizer_2=base_pipe.tokenizer_2,
         scheduler=copy.deepcopy(base_pipe.scheduler),
     )
-    return clone
 
 
-def clone_flux(base_pipe, device="cuda"):
+def clone_flux(base_pipe):
     """Create a lightweight FLUX pipeline clone sharing GPU model weights."""
     from diffusers import FluxKontextPipeline
-    clone = FluxKontextPipeline(
+    return FluxKontextPipeline(
         transformer=base_pipe.transformer,
         text_encoder=base_pipe.text_encoder,
         text_encoder_2=base_pipe.text_encoder_2,
@@ -155,65 +199,63 @@ def clone_flux(base_pipe, device="cuda"):
         vae=base_pipe.vae,
         scheduler=copy.deepcopy(base_pipe.scheduler),
     )
-    return clone
-
-
-def estimate_worker_vram():
-    """
-    Estimate VRAM per worker by running a single test inference.
-    Returns (sdxl_per_worker_gb, flux_per_worker_gb).
-    """
-    return 5.0, 8.0  # Conservative estimates; actual tuning happens at runtime
 
 
 def auto_worker_count(free_vram_gb, target_usage=0.90):
     """
     Calculate how many workers to run to fill target_usage of free VRAM.
-    Each worker pair (SDXL + FLUX) needs ~13GB for inference buffers.
+    Each worker pair needs inference buffers: ~4GB SDXL + ~7GB FLUX in bf16.
     """
-    sdxl_cost, flux_cost = estimate_worker_vram()
-    per_worker = sdxl_cost + flux_cost  # Both run concurrently in pipeline
+    per_worker = 4.0 + 7.0  # bf16 uses slightly less than fp16 for activations
     usable = free_vram_gb * target_usage
     count = max(1, int(usable / per_worker))
     return count
 
 
-def load_models(num_workers):
-    """Load base models, then create N clones sharing GPU weights."""
+def load_models(num_workers, compile_models=True):
+    """Load base models in bf16, optionally torch.compile, then create N clones."""
     from diffusers import StableDiffusionXLPipeline, FluxKontextPipeline
 
     total_vram, free_vram = get_vram_gb()
-    log(f"GPU: {torch.cuda.get_device_name(0)}")
-    log(f"VRAM: {total_vram:.1f}GB total, {free_vram:.1f}GB free")
 
-    # Load base SDXL
-    log("Loading SDXL base model (fp16)...")
+    # Load base SDXL in bfloat16
+    log("Loading SDXL base model (bfloat16)...")
     sdxl_base = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
-        torch_dtype=torch.float16,
-        variant="fp16",
+        torch_dtype=DTYPE,
         use_safetensors=True,
     ).to("cuda")
 
     _, free = get_vram_gb()
     log(f"  SDXL loaded. {free:.1f}GB VRAM free")
 
-    # Load base FLUX Kontext
-    log("Loading FLUX Kontext base model (fp16)...")
+    # Load base FLUX Kontext in bfloat16
+    log("Loading FLUX Kontext base model (bfloat16)...")
     flux_base = FluxKontextPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-Kontext-dev",
-        torch_dtype=torch.float16,
+        torch_dtype=DTYPE,
     ).to("cuda")
 
     _, free = get_vram_gb()
     log(f"  FLUX loaded. {free:.1f}GB VRAM free")
 
-    # Auto-detect worker count if requested
+    # torch.compile() with Triton backend — fuses ROCm kernels for ~20-40% speedup
+    if compile_models:
+        log("Compiling models with torch.compile (Triton/ROCm)...")
+        log("  (First inference will be slow due to compilation, then much faster)")
+        try:
+            sdxl_base.unet = torch.compile(sdxl_base.unet, mode="reduce-overhead")
+            flux_base.transformer = torch.compile(flux_base.transformer, mode="reduce-overhead")
+            log("  Compilation registered (will JIT on first run)")
+        except Exception as e:
+            log(f"  torch.compile failed (non-fatal, running without): {e}")
+
+    # Auto-detect worker count
     if num_workers == 0:
         num_workers = auto_worker_count(free)
         log(f"  Auto-detected: {num_workers} workers to fill {free:.1f}GB free VRAM")
 
-    # Create worker clones (share weights, own schedulers)
+    # Create worker clones (share compiled weights, own schedulers)
     log(f"Creating {num_workers} SDXL + {num_workers} FLUX worker clones...")
     sdxl_workers = [clone_sdxl(sdxl_base) for _ in range(num_workers)]
     flux_workers = [clone_flux(flux_base) for _ in range(num_workers)]
@@ -226,21 +268,21 @@ def load_models(num_workers):
 
 def sdxl_worker(worker_id, sdxl_pipe, task_queue, result_queue, output_dir):
     """Worker thread: pulls pair numbers from queue, generates SDXL originals."""
+    # Each worker gets its own HIP stream for concurrent kernel dispatch
     stream = torch.cuda.Stream()
     while True:
         try:
-            pair_num = task_queue.get(timeout=1)
+            pair_num = task_queue.get(timeout=2)
         except Empty:
             return
 
         prompt = random.choice(SCENE_PROMPTS)
         seed = random.randint(0, 2**32 - 1)
-        filename = f"pair_{pair_num:04d}_original.png"
-        filepath = os.path.join(output_dir, filename)
+        filepath = os.path.join(output_dir, f"pair_{pair_num:04d}_original.png")
 
         try:
-            with torch.cuda.stream(stream):
-                gen = torch.Generator("cuda").manual_seed(seed)
+            with torch.cuda.stream(stream), torch.no_grad():
+                gen = torch.Generator(device="cuda").manual_seed(seed)
                 img = sdxl_pipe(
                     prompt=prompt,
                     negative_prompt=NEGATIVE_PROMPT,
@@ -254,13 +296,16 @@ def sdxl_worker(worker_id, sdxl_pipe, task_queue, result_queue, output_dir):
             img.save(filepath)
             result_queue.put((pair_num, img))
             stats["sdxl_done"] += 1
-            log(f"  [W{worker_id}] SDXL #{pair_num} done ({stats['sdxl_done']} total)")
+            log(f"  [S{worker_id}] SDXL #{pair_num} done ({stats['sdxl_done']} total)")
 
-        except Exception as e:
-            log(f"  [W{worker_id}] SDXL #{pair_num} ERROR: {e}")
+        except torch.cuda.OutOfMemoryError:
+            log(f"  [S{worker_id}] SDXL #{pair_num} OOM — skipping, will retry if rerun")
+            gc.collect()
+            torch.cuda.empty_cache()
             stats["errors"] += 1
-            task_queue.task_done()
-            continue
+        except Exception as e:
+            log(f"  [S{worker_id}] SDXL #{pair_num} ERROR: {e}")
+            stats["errors"] += 1
 
         task_queue.task_done()
 
@@ -272,8 +317,7 @@ def flux_worker(worker_id, flux_pipe, result_queue, output_dir, total_target):
         try:
             pair_num, orig_img = result_queue.get(timeout=5)
         except Empty:
-            # Check if SDXL is done and queue is empty
-            if stats["sdxl_done"] >= total_target:
+            if stats["sdxl_done"] + stats["errors"] >= total_target:
                 return
             continue
 
@@ -281,7 +325,7 @@ def flux_worker(worker_id, flux_pipe, result_queue, output_dir, total_target):
         instruction = random.choice(EDIT_INSTRUCTIONS)
 
         try:
-            with torch.cuda.stream(stream):
+            with torch.cuda.stream(stream), torch.no_grad():
                 result = flux_pipe(
                     image=orig_img.resize((IMAGE_SIZE, IMAGE_SIZE)),
                     prompt=instruction,
@@ -295,8 +339,13 @@ def flux_worker(worker_id, flux_pipe, result_queue, output_dir, total_target):
             stats["flux_done"] += 1
             elapsed = time.time() - stats["start_time"]
             rate = stats["flux_done"] / (elapsed / 3600)
-            log(f"  [F{worker_id}] FLUX #{pair_num} done ({stats['flux_done']} complete pairs | {rate:.0f}/hr)")
+            log(f"  [F{worker_id}] FLUX #{pair_num} done ({stats['flux_done']} complete | {rate:.0f}/hr)")
 
+        except torch.cuda.OutOfMemoryError:
+            log(f"  [F{worker_id}] FLUX #{pair_num} OOM — skipping")
+            gc.collect()
+            torch.cuda.empty_cache()
+            stats["errors"] += 1
         except Exception as e:
             log(f"  [F{worker_id}] FLUX #{pair_num} ERROR: {e}")
             stats["errors"] += 1
@@ -305,16 +354,28 @@ def flux_worker(worker_id, flux_pipe, result_queue, output_dir, total_target):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MI300X Max-VRAM Image Generator")
-    parser.add_argument("--workers", type=int, default=0, help="Number of parallel workers (0=auto-fill VRAM, default: 0)")
-    parser.add_argument("--target", type=int, default=500, help="Total pairs to generate (default: 500)")
-    parser.add_argument("--output", type=str, default=OUTPUT_DIR, help="Output directory")
+    parser = argparse.ArgumentParser(description="MI300X Max-VRAM Image Generator (ROCm)")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Number of parallel workers (0=auto-fill VRAM, default: 0)")
+    parser.add_argument("--target", type=int, default=500,
+                        help="Total pairs to generate (default: 500)")
+    parser.add_argument("--output", type=str, default=OUTPUT_DIR,
+                        help="Output directory")
+    parser.add_argument("--no-compile", action="store_true",
+                        help="Disable torch.compile (faster startup, slower inference)")
     args = parser.parse_args()
 
     num_workers = args.workers
     target = args.target
     output_dir = args.output
     os.makedirs(output_dir, exist_ok=True)
+
+    # ── ROCm setup ──────────────────────────────────────────────────────
+    log("═══════════════════════════════════════════════════════")
+    log("  MI300X Max-VRAM Generator (ROCm/HIP)")
+    log("═══════════════════════════════════════════════════════\n")
+
+    is_rocm = setup_rocm()
 
     # ── Resume support ──────────────────────────────────────────────────
     existing = set()
@@ -333,21 +394,19 @@ def main():
         log(f"Already have {len(existing)} pairs, target is {target}. Done!")
         return
 
-    log(f"═══════════════════════════════════════════════════════")
-    log(f"  MI300X Max-VRAM Generator")
-    log(f"  Workers: {'AUTO (fill VRAM)' if num_workers == 0 else f'{num_workers} SDXL + {num_workers} FLUX'}")
+    log(f"\n  Workers: {'AUTO (fill VRAM)' if num_workers == 0 else f'{num_workers} SDXL + {num_workers} FLUX'}")
     log(f"  Target: {remaining} pairs ({target} total, {len(existing)} exist)")
     log(f"  Output: {output_dir}")
-    log(f"═══════════════════════════════════════════════════════\n")
+    log(f"  Compile: {'no' if args.no_compile else 'yes (Triton/ROCm)'}\n")
 
     # ── Load models + create worker clones ──────────────────────────────
-    sdxl_workers, flux_workers, num_workers = load_models(num_workers)
+    sdxl_workers, flux_workers, num_workers = load_models(
+        num_workers, compile_models=not args.no_compile
+    )
 
     # ── Setup queues ────────────────────────────────────────────────────
-    # task_queue: pair numbers for SDXL to generate
-    # result_queue: (pair_num, image) for FLUX to process
     task_queue = Queue()
-    result_queue = Queue(maxsize=num_workers * 3)  # Buffer 3x workers to avoid RAM bloat
+    result_queue = Queue(maxsize=num_workers * 3)
 
     start_pair = max(existing) + 1 if existing else 1
     for i in range(remaining):
@@ -356,11 +415,10 @@ def main():
     stats["start_time"] = time.time()
 
     # ── Launch workers ──────────────────────────────────────────────────
-    log(f"Launching {num_workers} SDXL workers + {num_workers} FLUX workers...\n")
+    log(f"Launching {num_workers} SDXL + {num_workers} FLUX workers across MI300X XCDs...\n")
 
     threads = []
 
-    # SDXL producer threads
     for i in range(num_workers):
         t = threading.Thread(
             target=sdxl_worker,
@@ -370,7 +428,6 @@ def main():
         t.start()
         threads.append(t)
 
-    # FLUX consumer threads
     for i in range(num_workers):
         t = threading.Thread(
             target=flux_worker,
@@ -398,7 +455,6 @@ def main():
     except KeyboardInterrupt:
         log("\nInterrupted! Waiting for current images to finish...")
 
-    # Wait for threads to finish
     for t in threads:
         t.join(timeout=60)
 
@@ -409,7 +465,7 @@ def main():
     log(f"  Generated: {stats['flux_done']} complete pairs")
     log(f"  Errors: {stats['errors']}")
     log(f"  Time: {total_time/60:.1f} minutes ({total_time/3600:.1f} hours)")
-    if stats['flux_done'] > 0:
+    if stats["flux_done"] > 0:
         log(f"  Average: {total_time/stats['flux_done']:.1f}s per pair")
         log(f"  Rate: {stats['flux_done']/(total_time/3600):.0f} pairs/hour")
     log(f"  Output: {output_dir}")
