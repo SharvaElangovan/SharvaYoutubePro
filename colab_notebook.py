@@ -273,8 +273,9 @@ print(f"  Complete pairs:  {complete_pairs}")
 
 if complete_pairs > 0:
     print(f"  That's enough for {complete_pairs // 5} videos ({complete_pairs} puzzles)")
-
-print("\\nALL_IMAGES_GENERATED")
+    print("\\nALL_IMAGES_GENERATED")
+else:
+    print("\\nERROR: No complete pairs found! Check cell errors above.")
 """
 
 

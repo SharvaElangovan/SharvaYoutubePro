@@ -26,7 +26,7 @@ LOG_FILE = os.path.join(SCRIPT_DIR, "colab_runner.log")
 # Colab notebook URL
 COLAB_NOTEBOOK_URL = os.environ.get(
     "COLAB_NOTEBOOK_URL",
-    "https://colab.research.google.com/drive/1f0T_JhQaVtCwncEg0qx46YE7kBhNNYLm"
+    "https://colab.research.google.com/drive/1eqpW9P4zEnLCJ7-Xk8RSIkc2HZjkZNOe"
 )
 
 # Local folder to sync images into
@@ -90,19 +90,79 @@ def run_colab_notebook():
         driver.get(COLAB_NOTEBOOK_URL)
         time.sleep(15)  # Wait for Colab to fully load
 
+        # Inject visual click indicator (shows red dot where Selenium clicks)
+        if not headless:
+            driver.execute_script("""
+                document.addEventListener('click', function(e) {
+                    const dot = document.createElement('div');
+                    dot.style.cssText = 'position:fixed;z-index:999999;pointer-events:none;' +
+                        'width:20px;height:20px;border-radius:50%;background:red;opacity:0.8;' +
+                        'left:' + (e.clientX - 10) + 'px;top:' + (e.clientY - 10) + 'px;' +
+                        'transition:all 0.5s ease-out;';
+                    document.body.appendChild(dot);
+                    setTimeout(() => { dot.style.opacity = '0'; dot.style.transform = 'scale(3)'; }, 50);
+                    setTimeout(() => dot.remove(), 600);
+                }, true);
+            """)
+
         # Check if we need to sign in
         if "accounts.google.com" in driver.current_url or "signin" in driver.current_url.lower():
             log("ERROR: Not logged into Google in Firefox.")
             log("  Open Firefox manually, log into Google, then try again.")
             return False
 
-        log("Colab loaded. Sending Ctrl+F9 (Run All)...")
-        ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.F9).key_up(Keys.CONTROL).perform()
+        log("Colab loaded. Clicking Runtime → Restart session and run all...")
+
+        # Click the "Runtime" menu button (id="runtime-menu-button")
+        try:
+            runtime_btn = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.ID, "runtime-menu-button"))
+            )
+            runtime_btn.click()
+            log("Opened Runtime menu")
+            time.sleep(2)
+
+            # Click "Restart session and run all" - clears outputs so no stale markers
+            restart_run = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR,
+                    "div.goog-menuitem[command='restart-and-run-all']"
+                ))
+            )
+            restart_run.click()
+            log("Clicked 'Restart session and run all'")
+        except TimeoutException:
+            log("CSS selector failed, trying JavaScript fallback...")
+            driver.execute_script("""
+                const item = document.querySelector("div.goog-menuitem[command='restart-and-run-all']");
+                if (item) { item.click(); }
+            """)
+            log("Used JavaScript fallback")
+
+        time.sleep(3)
+
+        # Handle the "Are you sure?" confirmation for restart
+        try:
+            ok_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    "//*[self::button or self::div[contains(@class,'goog-buttonset-default')]]"
+                    "[contains(text(), 'Yes') or contains(text(), 'OK') or contains(text(), 'ok')]"
+                ))
+            )
+            ok_btn.click()
+            log("Confirmed restart dialog")
+        except TimeoutException:
+            # Try pressing Enter as fallback
+            try:
+                driver.switch_to.active_element.send_keys(Keys.RETURN)
+                log("Pressed Enter to confirm restart")
+            except Exception:
+                log("No restart confirmation dialog found")
+
         time.sleep(5)
 
         # Handle "Run anyway" dialog (for notebooks not authored by you)
         try:
-            run_anyway = WebDriverWait(driver, 10).until(
+            run_anyway = WebDriverWait(driver, 15).until(
                 EC.element_to_be_clickable((By.XPATH,
                     "//*[contains(text(), 'Run anyway') or contains(text(), 'RUN ANYWAY')]"
                 ))
@@ -112,27 +172,70 @@ def run_colab_notebook():
         except TimeoutException:
             log("No 'Run anyway' dialog (or already dismissed)")
 
+        # Handle Google Drive permission dialogs (Allow, Continue, etc.)
+        # drive.mount triggers multiple popups - keep clicking through them
+        log("Watching for Drive permission dialogs (up to 90s)...")
+        dialog_start = time.time()
+        while time.time() - dialog_start < 90:
+            time.sleep(5)
+            clicked = False
+
+            # Try clicking any Allow/Continue/OK/Connect buttons
+            for text in ['Allow', 'Continue', 'Connect', 'OK', 'Permit',
+                         'ALLOW', 'CONTINUE', 'CONNECT']:
+                try:
+                    btn = driver.find_element(By.XPATH,
+                        f"//*[self::button or self::a or self::div]"
+                        f"[contains(text(), '{text}')]"
+                    )
+                    if btn.is_displayed():
+                        btn.click()
+                        log(f"Clicked '{text}' button")
+                        clicked = True
+                        time.sleep(3)
+                        break
+                except Exception:
+                    pass
+
+            if not clicked:
+                # Try pressing Enter on the active element as fallback
+                try:
+                    active = driver.switch_to.active_element
+                    active.send_keys(Keys.RETURN)
+                except Exception:
+                    pass
+
+        log("Done watching for Drive permission dialogs")
+
         time.sleep(5)
 
         # Wait for execution to complete
+        # "Restart session and run all" clears all outputs, so no stale marker issue
         log(f"Waiting for notebook execution (max {MAX_WAIT_TIME // 60} min)...")
         start_time = time.time()
 
         while time.time() - start_time < MAX_WAIT_TIME:
-            time.sleep(30)
+            time.sleep(60)
             elapsed = int(time.time() - start_time)
-            log(f"  Waiting... ({elapsed}s elapsed)")
+            log(f"  Waiting... ({elapsed // 60}m {elapsed % 60}s elapsed)")
 
             try:
-                # Check for completion marker in page output
                 page_source = driver.page_source
+
                 if "ALL_IMAGES_GENERATED" in page_source:
-                    log("Found completion marker - notebook finished!")
-                    break
+                    if elapsed > 600:  # Don't trust marker before 10 min
+                        log("Found completion marker - notebook finished!")
+                        break
+                    else:
+                        log(f"  Marker found too early ({elapsed}s) - notebook likely errored, ignoring")
 
                 # Check for errors
                 if "ResourceExhausted" in page_source or "out of memory" in page_source.lower():
                     log("GPU OOM detected - notebook may have failed")
+                    break
+
+                if "Runtime disconnected" in page_source:
+                    log("Runtime disconnected - session lost")
                     break
             except Exception:
                 pass
