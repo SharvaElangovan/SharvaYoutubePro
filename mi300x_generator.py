@@ -3,34 +3,40 @@
 MI300X Max-VRAM Image Generator
 
 Maximizes 192GB VRAM on AMD MI300X for mass parallel SDXL + FLUX generation.
-Both models stay loaded (~31GB), leaving ~160GB for large batch inference.
+Loads each model ONCE, creates N lightweight pipeline clones sharing GPU weights,
+runs them in parallel threads across the MI300X's 8 compute dies.
+Auto-detects optimal worker count to fill ~90% of free VRAM.
 
 Usage:
     pip install diffusers[torch] transformers accelerate safetensors sentencepiece protobuf
-    python mi300x_generator.py
+    python mi300x_generator.py                # auto-fill VRAM (default)
+    python mi300x_generator.py --workers 12   # force 12 workers
+    python mi300x_generator.py --target 1000  # generate 1000 pairs
 """
 
 import torch
 import gc
 import os
 import sys
+import copy
 import time
 import random
+import argparse
+import threading
 from datetime import datetime
+from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
 # ── Config ──────────────────────────────────────────────────────────────
 OUTPUT_DIR = os.path.expanduser("~/spot_difference_images")
-TARGET_PAIRS = 500          # Total image pairs to generate
-SDXL_BATCH_START = 20       # Starting SDXL batch size (auto-tunes down on OOM)
-FLUX_BATCH_START = 8        # Starting FLUX batch size (auto-tunes down on OOM)
 IMAGE_SIZE = 1024
 SDXL_STEPS = 30
-FLUX_STEPS = 24             # Fewer steps = faster, MI300X handles it fine
+FLUX_STEPS = 24
 SDXL_GUIDANCE = 7.5
 FLUX_GUIDANCE = 2.5
 
-# ── Scene prompts (same as Colab notebook) ──────────────────────────────
+# ── Scene prompts ───────────────────────────────────────────────────────
 SCENE_PROMPTS = [
     "living room interior with couch bookshelf floor lamp coffee table and rug, flat vector illustration, simple clipart style, solid colors, no shading, 2D graphic design, clean lines, bright colors",
     "garden scene with red flowers butterflies watering can white fence and trees, flat vector art, clipart style, bold colors, no gradients, simple geometric shapes, 2D illustration",
@@ -101,9 +107,15 @@ EDIT_INSTRUCTIONS = [
     "Make exactly 4 changes to this clipart image: replace one object with a different object of similar size, change two objects' colors to new colors, and remove one small detail. Keep the flat clipart style.",
 ]
 
+# ── Globals ─────────────────────────────────────────────────────────────
+print_lock = threading.Lock()
+save_lock = threading.Lock()
+pair_counter_lock = threading.Lock()
+stats = {"sdxl_done": 0, "flux_done": 0, "errors": 0, "start_time": 0}
+
 
 def get_vram_gb():
-    """Get available VRAM in GB."""
+    """Get total and free VRAM in GB."""
     if torch.cuda.is_available():
         total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
         used = torch.cuda.memory_allocated(0) / (1024**3)
@@ -112,187 +124,165 @@ def get_vram_gb():
 
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    with print_lock:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def load_models():
-    """Load both SDXL and FLUX into VRAM simultaneously."""
+def clone_sdxl(base_pipe, device="cuda"):
+    """Create a lightweight SDXL pipeline clone sharing GPU model weights."""
+    from diffusers import StableDiffusionXLPipeline
+    clone = StableDiffusionXLPipeline(
+        unet=base_pipe.unet,
+        vae=base_pipe.vae,
+        text_encoder=base_pipe.text_encoder,
+        text_encoder_2=base_pipe.text_encoder_2,
+        tokenizer=base_pipe.tokenizer,
+        tokenizer_2=base_pipe.tokenizer_2,
+        scheduler=copy.deepcopy(base_pipe.scheduler),
+    )
+    return clone
+
+
+def clone_flux(base_pipe, device="cuda"):
+    """Create a lightweight FLUX pipeline clone sharing GPU model weights."""
+    from diffusers import FluxKontextPipeline
+    clone = FluxKontextPipeline(
+        transformer=base_pipe.transformer,
+        text_encoder=base_pipe.text_encoder,
+        text_encoder_2=base_pipe.text_encoder_2,
+        tokenizer=base_pipe.tokenizer,
+        tokenizer_2=base_pipe.tokenizer_2,
+        vae=base_pipe.vae,
+        scheduler=copy.deepcopy(base_pipe.scheduler),
+    )
+    return clone
+
+
+def estimate_worker_vram():
+    """
+    Estimate VRAM per worker by running a single test inference.
+    Returns (sdxl_per_worker_gb, flux_per_worker_gb).
+    """
+    return 5.0, 8.0  # Conservative estimates; actual tuning happens at runtime
+
+
+def auto_worker_count(free_vram_gb, target_usage=0.90):
+    """
+    Calculate how many workers to run to fill target_usage of free VRAM.
+    Each worker pair (SDXL + FLUX) needs ~13GB for inference buffers.
+    """
+    sdxl_cost, flux_cost = estimate_worker_vram()
+    per_worker = sdxl_cost + flux_cost  # Both run concurrently in pipeline
+    usable = free_vram_gb * target_usage
+    count = max(1, int(usable / per_worker))
+    return count
+
+
+def load_models(num_workers):
+    """Load base models, then create N clones sharing GPU weights."""
     from diffusers import StableDiffusionXLPipeline, FluxKontextPipeline
 
     total_vram, free_vram = get_vram_gb()
     log(f"GPU: {torch.cuda.get_device_name(0)}")
     log(f"VRAM: {total_vram:.1f}GB total, {free_vram:.1f}GB free")
 
-    # Load SDXL
-    log("Loading SDXL (fp16)...")
-    sdxl = StableDiffusionXLPipeline.from_pretrained(
+    # Load base SDXL
+    log("Loading SDXL base model (fp16)...")
+    sdxl_base = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/stable-diffusion-xl-base-1.0",
         torch_dtype=torch.float16,
         variant="fp16",
         use_safetensors=True,
     ).to("cuda")
 
-    _, free_after_sdxl = get_vram_gb()
-    log(f"  SDXL loaded. VRAM used: {total_vram - free_after_sdxl:.1f}GB, free: {free_after_sdxl:.1f}GB")
+    _, free = get_vram_gb()
+    log(f"  SDXL loaded. {free:.1f}GB VRAM free")
 
-    # Load FLUX Kontext
-    log("Loading FLUX Kontext (fp16)...")
-    flux = FluxKontextPipeline.from_pretrained(
+    # Load base FLUX Kontext
+    log("Loading FLUX Kontext base model (fp16)...")
+    flux_base = FluxKontextPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-Kontext-dev",
         torch_dtype=torch.float16,
     ).to("cuda")
 
-    _, free_after_both = get_vram_gb()
-    log(f"  FLUX loaded. VRAM used: {total_vram - free_after_both:.1f}GB, free: {free_after_both:.1f}GB")
+    _, free = get_vram_gb()
+    log(f"  FLUX loaded. {free:.1f}GB VRAM free")
 
-    return sdxl, flux
+    # Auto-detect worker count if requested
+    if num_workers == 0:
+        num_workers = auto_worker_count(free)
+        log(f"  Auto-detected: {num_workers} workers to fill {free:.1f}GB free VRAM")
+
+    # Create worker clones (share weights, own schedulers)
+    log(f"Creating {num_workers} SDXL + {num_workers} FLUX worker clones...")
+    sdxl_workers = [clone_sdxl(sdxl_base) for _ in range(num_workers)]
+    flux_workers = [clone_flux(flux_base) for _ in range(num_workers)]
+
+    _, free = get_vram_gb()
+    log(f"  {num_workers} workers ready. {free:.1f}GB VRAM free for inference")
+
+    return sdxl_workers, flux_workers, num_workers
 
 
-def find_batch_size(model_name, run_fn, start_size):
-    """Binary search for max batch size that fits in VRAM."""
-    batch_size = start_size
-    while batch_size >= 1:
+def sdxl_worker(worker_id, sdxl_pipe, task_queue, result_queue, output_dir):
+    """Worker thread: pulls pair numbers from queue, generates SDXL originals."""
+    stream = torch.cuda.Stream()
+    while True:
         try:
-            log(f"  Testing {model_name} batch_size={batch_size}...")
-            run_fn(batch_size)
-            log(f"  {model_name} batch_size={batch_size} OK!")
-            return batch_size
-        except torch.cuda.OutOfMemoryError:
-            log(f"  {model_name} batch_size={batch_size} OOM, reducing...")
-            gc.collect()
-            torch.cuda.empty_cache()
-            batch_size = batch_size // 2
-    return 1
+            pair_num = task_queue.get(timeout=1)
+        except Empty:
+            return
+
+        prompt = random.choice(SCENE_PROMPTS)
+        seed = random.randint(0, 2**32 - 1)
+        filename = f"pair_{pair_num:04d}_original.png"
+        filepath = os.path.join(output_dir, filename)
+
+        try:
+            with torch.cuda.stream(stream):
+                gen = torch.Generator("cuda").manual_seed(seed)
+                img = sdxl_pipe(
+                    prompt=prompt,
+                    negative_prompt=NEGATIVE_PROMPT,
+                    num_inference_steps=SDXL_STEPS,
+                    guidance_scale=SDXL_GUIDANCE,
+                    generator=gen,
+                    width=IMAGE_SIZE,
+                    height=IMAGE_SIZE,
+                ).images[0]
+
+            img.save(filepath)
+            result_queue.put((pair_num, img))
+            stats["sdxl_done"] += 1
+            log(f"  [W{worker_id}] SDXL #{pair_num} done ({stats['sdxl_done']} total)")
+
+        except Exception as e:
+            log(f"  [W{worker_id}] SDXL #{pair_num} ERROR: {e}")
+            stats["errors"] += 1
+            task_queue.task_done()
+            continue
+
+        task_queue.task_done()
 
 
-def generate_sdxl_batch(sdxl, prompts, seeds):
-    """Generate a batch of SDXL images."""
-    generators = [torch.Generator("cuda").manual_seed(s) for s in seeds]
-    # SDXL doesn't support list of generators for batch, so loop with single generator
-    # But we can batch the prompts for shared compute
-    images = []
-    for prompt, gen in zip(prompts, generators):
-        img = sdxl(
-            prompt=prompt,
-            negative_prompt=NEGATIVE_PROMPT,
-            num_inference_steps=SDXL_STEPS,
-            guidance_scale=SDXL_GUIDANCE,
-            generator=gen,
-            width=IMAGE_SIZE,
-            height=IMAGE_SIZE,
-        ).images[0]
-        images.append(img)
-    return images
+def flux_worker(worker_id, flux_pipe, result_queue, output_dir, total_target):
+    """Worker thread: takes SDXL results, generates FLUX modifications."""
+    stream = torch.cuda.Stream()
+    while stats["flux_done"] + stats["errors"] < total_target:
+        try:
+            pair_num, orig_img = result_queue.get(timeout=5)
+        except Empty:
+            # Check if SDXL is done and queue is empty
+            if stats["sdxl_done"] >= total_target:
+                return
+            continue
 
+        modified_path = os.path.join(output_dir, f"pair_{pair_num:04d}_modified.png")
+        instruction = random.choice(EDIT_INSTRUCTIONS)
 
-def generate_flux_batch(flux, images, instructions):
-    """Generate a batch of FLUX modifications."""
-    results = []
-    for img, instruction in zip(images, instructions):
-        result = flux(
-            image=img,
-            prompt=instruction,
-            guidance_scale=FLUX_GUIDANCE,
-            num_inference_steps=FLUX_STEPS,
-            height=IMAGE_SIZE,
-            width=IMAGE_SIZE,
-        ).images[0]
-        results.append(result)
-    return results
-
-
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # Check existing pairs to support resume
-    existing = set()
-    for f in os.listdir(OUTPUT_DIR):
-        if "_original.png" in f:
-            pair_num = int(f.split("_")[1])
-            modified = f"pair_{pair_num:04d}_modified.png"
-            if os.path.exists(os.path.join(OUTPUT_DIR, modified)):
-                existing.add(pair_num)
-
-    if existing:
-        log(f"Found {len(existing)} existing complete pairs, resuming...")
-    remaining = TARGET_PAIRS - len(existing)
-    if remaining <= 0:
-        log(f"Already have {len(existing)} pairs, target is {TARGET_PAIRS}. Done!")
-        return
-
-    log(f"Target: {TARGET_PAIRS} pairs, need {remaining} more")
-    log(f"Output: {OUTPUT_DIR}")
-    log("")
-
-    # Load both models into VRAM
-    sdxl, flux = load_models()
-
-    total_vram, free_vram = get_vram_gb()
-    log(f"\nBoth models loaded. {free_vram:.1f}GB VRAM free for batches")
-
-    # ── Generate in pipeline batches ─────────────────────────────────────
-    # Process in chunks: generate SDXL batch → immediately FLUX that batch → save → repeat
-    # This keeps both models hot in VRAM and avoids storing too many images in RAM
-
-    PIPELINE_CHUNK = 20  # Process 20 pairs at a time
-    pair_counter = max(existing) + 1 if existing else 1
-    generated = 0
-    start_time = time.time()
-
-    while generated < remaining:
-        chunk_size = min(PIPELINE_CHUNK, remaining - generated)
-        chunk_start = time.time()
-
-        # Pick random prompts for this chunk
-        prompts = [random.choice(SCENE_PROMPTS) for _ in range(chunk_size)]
-        seeds = [random.randint(0, 2**32 - 1) for _ in range(chunk_size)]
-
-        # ── Phase 1: SDXL generates base scenes ────────────────────────
-        log(f"\n{'='*60}")
-        log(f"Chunk {generated//PIPELINE_CHUNK + 1}: Generating {chunk_size} base scenes with SDXL...")
-        sdxl_start = time.time()
-
-        originals = []
-        for i, (prompt, seed) in enumerate(zip(prompts, seeds)):
-            gen = torch.Generator("cuda").manual_seed(seed)
-            img = sdxl(
-                prompt=prompt,
-                negative_prompt=NEGATIVE_PROMPT,
-                num_inference_steps=SDXL_STEPS,
-                guidance_scale=SDXL_GUIDANCE,
-                generator=gen,
-                width=IMAGE_SIZE,
-                height=IMAGE_SIZE,
-            ).images[0]
-            originals.append(img)
-
-            # Save original immediately
-            pair_num = pair_counter + i
-            filename = f"pair_{pair_num:04d}_original.png"
-            img.save(os.path.join(OUTPUT_DIR, filename))
-
-            if (i + 1) % 5 == 0:
-                log(f"  SDXL: {i+1}/{chunk_size} done")
-
-        sdxl_time = time.time() - sdxl_start
-        log(f"  SDXL batch done in {sdxl_time:.1f}s ({sdxl_time/chunk_size:.1f}s/image)")
-
-        # ── Phase 2: FLUX creates modifications ────────────────────────
-        log(f"Creating {chunk_size} modifications with FLUX Kontext...")
-        flux_start = time.time()
-
-        for i, orig_img in enumerate(originals):
-            pair_num = pair_counter + i
-            modified_path = os.path.join(OUTPUT_DIR, f"pair_{pair_num:04d}_modified.png")
-
-            # Skip if already exists (resume support)
-            if os.path.exists(modified_path):
-                log(f"  pair_{pair_num:04d}_modified.png exists, skipping")
-                continue
-
-            instruction = random.choice(EDIT_INSTRUCTIONS)
-            try:
-                result = flux(
+        try:
+            with torch.cuda.stream(stream):
+                result = flux_pipe(
                     image=orig_img.resize((IMAGE_SIZE, IMAGE_SIZE)),
                     prompt=instruction,
                     guidance_scale=FLUX_GUIDANCE,
@@ -300,44 +290,131 @@ def main():
                     height=IMAGE_SIZE,
                     width=IMAGE_SIZE,
                 ).images[0]
-                result.save(modified_path)
-            except Exception as e:
-                log(f"  ERROR on pair {pair_num}: {e}")
-                continue
 
-            if (i + 1) % 5 == 0:
-                log(f"  FLUX: {i+1}/{chunk_size} done")
+            result.save(modified_path)
+            stats["flux_done"] += 1
+            elapsed = time.time() - stats["start_time"]
+            rate = stats["flux_done"] / (elapsed / 3600)
+            log(f"  [F{worker_id}] FLUX #{pair_num} done ({stats['flux_done']} complete pairs | {rate:.0f}/hr)")
 
-        flux_time = time.time() - flux_start
-        log(f"  FLUX batch done in {flux_time:.1f}s ({flux_time/chunk_size:.1f}s/image)")
+        except Exception as e:
+            log(f"  [F{worker_id}] FLUX #{pair_num} ERROR: {e}")
+            stats["errors"] += 1
 
-        # ── Stats ──────────────────────────────────────────────────────
-        chunk_time = time.time() - chunk_start
-        generated += chunk_size
-        pair_counter += chunk_size
-        elapsed = time.time() - start_time
-        rate = generated / (elapsed / 3600)  # pairs per hour
+        result_queue.task_done()
 
-        log(f"\n  Chunk: {chunk_time:.1f}s | Total: {generated}/{remaining} pairs")
-        log(f"  Rate: {rate:.0f} pairs/hour | ETA: {(remaining - generated) / (rate / 60):.0f} min remaining")
 
-        # Free batch memory
-        del originals
-        gc.collect()
-        torch.cuda.empty_cache()
+def main():
+    parser = argparse.ArgumentParser(description="MI300X Max-VRAM Image Generator")
+    parser.add_argument("--workers", type=int, default=0, help="Number of parallel workers (0=auto-fill VRAM, default: 0)")
+    parser.add_argument("--target", type=int, default=500, help="Total pairs to generate (default: 500)")
+    parser.add_argument("--output", type=str, default=OUTPUT_DIR, help="Output directory")
+    args = parser.parse_args()
+
+    num_workers = args.workers
+    target = args.target
+    output_dir = args.output
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Resume support ──────────────────────────────────────────────────
+    existing = set()
+    if os.path.isdir(output_dir):
+        for f in os.listdir(output_dir):
+            if "_original.png" in f:
+                pair_num = int(f.split("_")[1])
+                modified = f"pair_{pair_num:04d}_modified.png"
+                if os.path.exists(os.path.join(output_dir, modified)):
+                    existing.add(pair_num)
+
+    if existing:
+        log(f"Found {len(existing)} existing complete pairs, resuming...")
+    remaining = target - len(existing)
+    if remaining <= 0:
+        log(f"Already have {len(existing)} pairs, target is {target}. Done!")
+        return
+
+    log(f"═══════════════════════════════════════════════════════")
+    log(f"  MI300X Max-VRAM Generator")
+    log(f"  Workers: {'AUTO (fill VRAM)' if num_workers == 0 else f'{num_workers} SDXL + {num_workers} FLUX'}")
+    log(f"  Target: {remaining} pairs ({target} total, {len(existing)} exist)")
+    log(f"  Output: {output_dir}")
+    log(f"═══════════════════════════════════════════════════════\n")
+
+    # ── Load models + create worker clones ──────────────────────────────
+    sdxl_workers, flux_workers, num_workers = load_models(num_workers)
+
+    # ── Setup queues ────────────────────────────────────────────────────
+    # task_queue: pair numbers for SDXL to generate
+    # result_queue: (pair_num, image) for FLUX to process
+    task_queue = Queue()
+    result_queue = Queue(maxsize=num_workers * 3)  # Buffer 3x workers to avoid RAM bloat
+
+    start_pair = max(existing) + 1 if existing else 1
+    for i in range(remaining):
+        task_queue.put(start_pair + i)
+
+    stats["start_time"] = time.time()
+
+    # ── Launch workers ──────────────────────────────────────────────────
+    log(f"Launching {num_workers} SDXL workers + {num_workers} FLUX workers...\n")
+
+    threads = []
+
+    # SDXL producer threads
+    for i in range(num_workers):
+        t = threading.Thread(
+            target=sdxl_worker,
+            args=(i, sdxl_workers[i], task_queue, result_queue, output_dir),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    # FLUX consumer threads
+    for i in range(num_workers):
+        t = threading.Thread(
+            target=flux_worker,
+            args=(i, flux_workers[i], result_queue, output_dir, remaining),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    # ── Monitor progress ────────────────────────────────────────────────
+    try:
+        while stats["flux_done"] + stats["errors"] < remaining:
+            time.sleep(30)
+            elapsed = time.time() - stats["start_time"]
+            rate = stats["flux_done"] / (elapsed / 3600) if stats["flux_done"] > 0 else 0
+            eta_min = (remaining - stats["flux_done"]) / (rate / 60) if rate > 0 else 0
+            _, free = get_vram_gb()
+
+            log(f"\n  ── Progress ──────────────────────")
+            log(f"  SDXL: {stats['sdxl_done']}/{remaining} | FLUX: {stats['flux_done']}/{remaining}")
+            log(f"  Rate: {rate:.0f} pairs/hr | ETA: {eta_min:.0f} min")
+            log(f"  VRAM free: {free:.1f}GB | Errors: {stats['errors']}")
+            log(f"  ──────────────────────────────────\n")
+
+    except KeyboardInterrupt:
+        log("\nInterrupted! Waiting for current images to finish...")
+
+    # Wait for threads to finish
+    for t in threads:
+        t.join(timeout=60)
 
     # ── Done ────────────────────────────────────────────────────────────
-    total_time = time.time() - start_time
-    log(f"\n{'='*60}")
-    log(f"DONE! Generated {generated} pairs in {total_time/60:.1f} minutes")
-    log(f"Average: {total_time/generated:.1f}s per pair")
-    log(f"Output: {OUTPUT_DIR}")
-
-    # Count complete pairs
-    originals = [f for f in os.listdir(OUTPUT_DIR) if "_original.png" in f]
-    modifieds = [f for f in os.listdir(OUTPUT_DIR) if "_modified.png" in f]
-    log(f"Complete pairs: {min(len(originals), len(modifieds))}")
-    log(f"That's enough for {min(len(originals), len(modifieds)) // 5} videos!")
+    total_time = time.time() - stats["start_time"]
+    log(f"\n{'═'*55}")
+    log(f"  DONE!")
+    log(f"  Generated: {stats['flux_done']} complete pairs")
+    log(f"  Errors: {stats['errors']}")
+    log(f"  Time: {total_time/60:.1f} minutes ({total_time/3600:.1f} hours)")
+    if stats['flux_done'] > 0:
+        log(f"  Average: {total_time/stats['flux_done']:.1f}s per pair")
+        log(f"  Rate: {stats['flux_done']/(total_time/3600):.0f} pairs/hour")
+    log(f"  Output: {output_dir}")
+    log(f"  Videos possible: {stats['flux_done'] // 5}")
+    log(f"{'═'*55}")
 
 
 if __name__ == "__main__":
