@@ -32,7 +32,7 @@ API_BASE = "https://api-amd.digitalocean.com/v2"
 DROPLET_CONFIG = {
     "size": "gpu-mi300x8-1536gb-devcloud",
     "image": "ubuntu-25-10-x64",
-    "ssh_keys": [],
+    "ssh_keys": [54161895],
     "backups": False,
     "ipv6": False,
     "monitoring": False,
