@@ -57,7 +57,10 @@ def api_request(method, endpoint, token, data=None):
         cmd += ["-d", json.dumps(data)]
     cmd.append(f"{API_BASE}{endpoint}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return {"raw": "timeout"}, 0
     output = result.stdout.strip()
 
     # Split response body and status code
@@ -101,17 +104,30 @@ def get_gpu_sizes(token):
     return gpu_sizes
 
 
+_vpc_cache = {}
+
 def try_create_droplet(token, region):
     """Attempt to create a GPU droplet in the given region."""
     config = {**DROPLET_CONFIG, "region": region, "name": f"mi300x-{region}-auto"}
 
-    # Try to get VPC for the region
-    vpcs_data, vpcs_status = api_request("GET", f"/vpcs?region={region}", token)
-    if vpcs_status == 200 and "vpcs" in vpcs_data and vpcs_data["vpcs"]:
-        config["vpc_uuid"] = vpcs_data["vpcs"][0]["id"]
+    # Cache VPC lookups (they don't change)
+    if region not in _vpc_cache:
+        try:
+            vpcs_data, vpcs_status = api_request("GET", f"/vpcs?region={region}", token)
+            if vpcs_status == 200 and "vpcs" in vpcs_data and vpcs_data["vpcs"]:
+                _vpc_cache[region] = vpcs_data["vpcs"][0]["id"]
+            else:
+                _vpc_cache[region] = None
+        except Exception:
+            _vpc_cache[region] = None
 
-    log(f"  Attempting to create droplet in {region}...")
-    data, status = api_request("POST", "/droplets", token, config)
+    if _vpc_cache.get(region):
+        config["vpc_uuid"] = _vpc_cache[region]
+
+    try:
+        data, status = api_request("POST", "/droplets", token, config)
+    except Exception as e:
+        return False, f"request failed: {e}"
 
     if status in (200, 201, 202):
         return True, data
@@ -301,11 +317,10 @@ def main():
     attempt = 0
     while True:
         attempt += 1
-        log(f"── Attempt #{attempt} ──")
 
+        grabbed = False
         for region in regions:
             if args.dry_run:
-                log(f"  [DRY RUN] Would try region: {region}")
                 continue
 
             success, result = try_create_droplet(token, region)
@@ -353,10 +368,10 @@ def main():
                     log(f"\n{'═'*55}")
                 return
 
-            else:
-                log(f"  {region}: {result}")
+        # One line per attempt instead of per-region spam
+        if attempt % 12 == 1:  # Log every ~60s at 5s interval
+            log(f"  Attempt #{attempt} — all {len(regions)} regions full. Polling every {args.interval}s...")
 
-        log(f"  No GPUs available. Retrying in {args.interval}s...\n")
         time.sleep(args.interval)
 
 
