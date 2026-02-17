@@ -363,6 +363,10 @@ def main():
                         help="Output directory")
     parser.add_argument("--no-compile", action="store_true",
                         help="Disable torch.compile (faster startup, slower inference)")
+    parser.add_argument("--budget", type=float, default=95.0,
+                        help="Max dollars to spend before auto-shutdown (default: 95, keeps $5 buffer)")
+    parser.add_argument("--cost-per-hour", type=float, default=15.92,
+                        help="Hourly cost of the droplet (default: 15.92 for 8xMI300X)")
     args = parser.parse_args()
 
     num_workers = args.workers
@@ -394,10 +398,12 @@ def main():
         log(f"Already have {len(existing)} pairs, target is {target}. Done!")
         return
 
+    max_hours = args.budget / args.cost_per_hour
     log(f"\n  Workers: {'AUTO (fill VRAM)' if num_workers == 0 else f'{num_workers} SDXL + {num_workers} FLUX'}")
     log(f"  Target: {remaining} pairs ({target} total, {len(existing)} exist)")
     log(f"  Output: {output_dir}")
-    log(f"  Compile: {'no' if args.no_compile else 'yes (Triton/ROCm)'}\n")
+    log(f"  Compile: {'no' if args.no_compile else 'yes (Triton/ROCm)'}")
+    log(f"  Budget: ${args.budget:.2f} (${args.cost_per_hour:.2f}/hr = {max_hours:.1f} hours max)\n")
 
     # ── Load models + create worker clones ──────────────────────────────
     sdxl_workers, flux_workers, num_workers = load_models(
@@ -437,12 +443,16 @@ def main():
         t.start()
         threads.append(t)
 
-    # ── Monitor progress ────────────────────────────────────────────────
+    # ── Monitor progress + budget tracking ──────────────────────────────
+    budget_exceeded = False
     try:
         while stats["flux_done"] + stats["errors"] < remaining:
             time.sleep(30)
             elapsed = time.time() - stats["start_time"]
-            rate = stats["flux_done"] / (elapsed / 3600) if stats["flux_done"] > 0 else 0
+            elapsed_hours = elapsed / 3600
+            spent = elapsed_hours * args.cost_per_hour
+            remaining_budget = args.budget - spent
+            rate = stats["flux_done"] / elapsed_hours if stats["flux_done"] > 0 else 0
             eta_min = (remaining - stats["flux_done"]) / (rate / 60) if rate > 0 else 0
             _, free = get_vram_gb()
 
@@ -450,7 +460,22 @@ def main():
             log(f"  SDXL: {stats['sdxl_done']}/{remaining} | FLUX: {stats['flux_done']}/{remaining}")
             log(f"  Rate: {rate:.0f} pairs/hr | ETA: {eta_min:.0f} min")
             log(f"  VRAM free: {free:.1f}GB | Errors: {stats['errors']}")
+            log(f"  BUDGET: ${spent:.2f} spent / ${args.budget:.2f} | ${remaining_budget:.2f} left ({remaining_budget/args.cost_per_hour*60:.0f} min)")
             log(f"  ──────────────────────────────────\n")
+
+            # Auto-stop 10 minutes before budget runs out (buffer for FLUX to finish)
+            if remaining_budget < args.cost_per_hour * (10/60):
+                log(f"  BUDGET WARNING: Only ${remaining_budget:.2f} left!")
+                log(f"  Stopping SDXL workers — letting FLUX finish current batch...")
+                budget_exceeded = True
+                # Drain the task queue so SDXL workers stop picking up new work
+                while not task_queue.empty():
+                    try:
+                        task_queue.get_nowait()
+                        task_queue.task_done()
+                    except Empty:
+                        break
+                break
 
     except KeyboardInterrupt:
         log("\nInterrupted! Waiting for current images to finish...")
@@ -458,19 +483,31 @@ def main():
     for t in threads:
         t.join(timeout=60)
 
+    # Wait for in-flight FLUX work to finish (up to 5 min)
+    if budget_exceeded:
+        log("Waiting up to 5 min for in-flight FLUX images to finish...")
+        deadline = time.time() + 300
+        while not result_queue.empty() and time.time() < deadline:
+            time.sleep(10)
+
     # ── Done ────────────────────────────────────────────────────────────
     total_time = time.time() - stats["start_time"]
+    total_spent = (total_time / 3600) * args.cost_per_hour
     log(f"\n{'═'*55}")
-    log(f"  DONE!")
+    log(f"  DONE!{'  (budget limit reached)' if budget_exceeded else ''}")
     log(f"  Generated: {stats['flux_done']} complete pairs")
     log(f"  Errors: {stats['errors']}")
     log(f"  Time: {total_time/60:.1f} minutes ({total_time/3600:.1f} hours)")
+    log(f"  Cost: ${total_spent:.2f} / ${args.budget:.2f} budget")
     if stats["flux_done"] > 0:
-        log(f"  Average: {total_time/stats['flux_done']:.1f}s per pair")
+        log(f"  Average: {total_time/stats['flux_done']:.1f}s per pair (${total_spent/stats['flux_done']:.3f}/pair)")
         log(f"  Rate: {stats['flux_done']/(total_time/3600):.0f} pairs/hour")
     log(f"  Output: {output_dir}")
     log(f"  Videos possible: {stats['flux_done'] // 5}")
     log(f"{'═'*55}")
+    if budget_exceeded:
+        log("\n  IMPORTANT: Destroy the droplet NOW to stop billing!")
+        log("  AMD Cloud Console → Droplets → Destroy")
 
 
 if __name__ == "__main__":
