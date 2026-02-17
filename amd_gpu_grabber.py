@@ -22,7 +22,9 @@ import time
 import json
 import argparse
 import subprocess
+import shutil
 from datetime import datetime
+from pathlib import Path
 
 API_BASE = "https://api-amd.digitalocean.com/v2"
 
@@ -120,6 +122,133 @@ def try_create_droplet(token, region):
         return False, error_msg
 
 
+def ssh_cmd(ip, cmd, timeout=600):
+    """Run a command on the remote droplet via SSH."""
+    ssh = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+        f"root@{ip}", cmd
+    ]
+    log(f"  [SSH] {cmd[:80]}...")
+    result = subprocess.run(ssh, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0 and result.stderr:
+        log(f"  [SSH] stderr: {result.stderr[:200]}")
+    return result
+
+
+def wait_for_ssh(ip, max_wait=300):
+    """Wait for SSH to become available on the droplet."""
+    log(f"  Waiting for SSH on {ip}...")
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            result = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                 f"root@{ip}", "echo ready"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0 and "ready" in result.stdout:
+                log(f"  SSH ready! ({time.time() - start:.0f}s)")
+                return True
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+        time.sleep(10)
+    return False
+
+
+def deploy_and_run(ip, droplet_id, token):
+    """Full auto-deploy: SSH in, install deps, run generator, copy images back, destroy droplet."""
+    local_output = os.path.expanduser("~/spot_difference_images")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    generator_path = os.path.join(script_dir, "mi300x_generator.py")
+
+    log(f"\n{'═'*55}")
+    log(f"  AUTO-DEPLOY STARTING")
+    log(f"{'═'*55}\n")
+
+    # Step 1: Wait for SSH
+    if not wait_for_ssh(ip):
+        log("ERROR: SSH never became available. Check the droplet manually.")
+        log(f"  ssh root@{ip}")
+        return
+
+    # Step 2: Upload the generator script
+    log("Uploading mi300x_generator.py...")
+    scp = subprocess.run(
+        ["scp", "-o", "StrictHostKeyChecking=no", generator_path, f"root@{ip}:/root/"],
+        capture_output=True, text=True, timeout=60
+    )
+    if scp.returncode != 0:
+        log(f"  SCP failed: {scp.stderr}")
+        return
+
+    # Step 3: Install dependencies
+    log("Installing Python dependencies (this takes a few minutes)...")
+    ssh_cmd(ip,
+        "pip install diffusers[torch] transformers accelerate safetensors sentencepiece protobuf",
+        timeout=600
+    )
+
+    # Step 4: Run the generator
+    log("\n  Starting MI300X generator...")
+    log("  This will run until budget limit ($98) is reached.\n")
+
+    # Run in foreground so we can stream output
+    ssh_proc = subprocess.Popen(
+        ["ssh", "-o", "StrictHostKeyChecking=no", f"root@{ip}",
+         "python /root/mi300x_generator.py --target 2000"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+
+    # Stream output in real-time
+    try:
+        for line in ssh_proc.stdout:
+            print(f"  [MI300X] {line}", end="", flush=True)
+        ssh_proc.wait()
+    except KeyboardInterrupt:
+        log("\nInterrupted! Copying whatever images were generated...")
+
+    # Step 5: Copy images back to local machine
+    log(f"\nCopying images from droplet to {local_output}...")
+    os.makedirs(local_output, exist_ok=True)
+
+    rsync = subprocess.run(
+        ["rsync", "-avz", "--progress",
+         f"root@{ip}:/root/spot_difference_images/", f"{local_output}/"],
+        capture_output=False, timeout=1800  # 30 min max for transfer
+    )
+
+    if rsync.returncode != 0:
+        log("  rsync failed, trying scp...")
+        subprocess.run(
+            ["scp", "-o", "StrictHostKeyChecking=no", "-r",
+             f"root@{ip}:/root/spot_difference_images/*", f"{local_output}/"],
+            capture_output=False, timeout=1800
+        )
+
+    # Count what we got
+    pairs = 0
+    if os.path.isdir(local_output):
+        originals = [f for f in os.listdir(local_output) if "_original.png" in f]
+        modifieds = [f for f in os.listdir(local_output) if "_modified.png" in f]
+        pairs = min(len(originals), len(modifieds))
+
+    log(f"\n{'═'*55}")
+    log(f"  IMAGES COPIED: {pairs} complete pairs")
+    log(f"  Location: {local_output}")
+    log(f"  Videos possible: {pairs // 5}")
+    log(f"{'═'*55}")
+
+    # Step 6: Destroy the droplet to stop billing
+    log(f"\nDestroying droplet {droplet_id} to stop billing...")
+    data, status = api_request("DELETE", f"/droplets/{droplet_id}", token)
+    if status == 204:
+        log("  Droplet destroyed! No more charges.")
+    else:
+        log(f"  WARNING: Could not destroy droplet (status {status})")
+        log(f"  DESTROY IT MANUALLY: AMD Cloud Console → Droplets → Destroy")
+        log(f"  Or: curl -X DELETE -H 'Authorization: Bearer $TOKEN' {API_BASE}/droplets/{droplet_id}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AMD Cloud GPU Auto-Grabber")
     parser.add_argument("--token", type=str, default=None,
@@ -128,6 +257,11 @@ def main():
                         help="Seconds between checks (default: 60)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Check availability without creating")
+    parser.add_argument("--manual", action="store_true",
+                        help="Don't auto-deploy, just print SSH info")
+    parser.add_argument("--local-output", type=str,
+                        default=os.path.expanduser("~/spot_difference_images"),
+                        help="Local directory to copy images back to")
     args = parser.parse_args()
 
     token = args.token or os.environ.get("AMD_TOKEN")
@@ -190,6 +324,7 @@ def main():
                 log(f"\n  Waiting for IP address...")
 
                 # Poll for IP
+                ip = None
                 for _ in range(30):
                     time.sleep(10)
                     d_data, d_status = api_request("GET", f"/droplets/{droplet_id}", token)
@@ -200,16 +335,22 @@ def main():
                             if net.get("type") == "public":
                                 ip = net["ip_address"]
                                 log(f"\n  PUBLIC IP: {ip}")
-                                log(f"  SSH: ssh root@{ip}")
-                                log(f"\n  Run your generator:")
-                                log(f"    scp mi300x_generator.py root@{ip}:")
-                                log(f"    ssh root@{ip}")
-                                log(f"    pip install diffusers[torch] transformers accelerate safetensors sentencepiece protobuf")
-                                log(f"    python mi300x_generator.py")
-                                log(f"\n{'═'*55}")
-                                return
+                                break
+                    if ip:
+                        break
 
-                log("  Could not get IP. Check the AMD Cloud console.")
+                if not ip:
+                    log("  Could not get IP. Check the AMD Cloud console.")
+                    return
+
+                # ── Auto-deploy and run ─────────────────────────────
+                if not args.manual:
+                    deploy_and_run(ip, droplet_id, token)
+                else:
+                    log(f"  SSH: ssh root@{ip}")
+                    log(f"  scp mi300x_generator.py root@{ip}:")
+                    log(f"  ssh root@{ip} 'pip install diffusers[torch] transformers accelerate safetensors sentencepiece protobuf && python mi300x_generator.py'")
+                    log(f"\n{'═'*55}")
                 return
 
             else:
