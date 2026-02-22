@@ -206,7 +206,7 @@ def deploy_and_run(ip, droplet_id, token):
 
     # Step 4: Run the generator
     log("\n  Starting MI300X generator...")
-    log("  This will run until budget limit ($98) is reached.\n")
+    log("  This will run until budget limit ($298) is reached.\n")
 
     # Run in foreground so we can stream output
     ssh_proc = subprocess.Popen(

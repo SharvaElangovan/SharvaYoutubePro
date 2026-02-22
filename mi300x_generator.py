@@ -363,8 +363,8 @@ def main():
                         help="Output directory")
     parser.add_argument("--no-compile", action="store_true",
                         help="Disable torch.compile (faster startup, slower inference)")
-    parser.add_argument("--budget", type=float, default=98.0,
-                        help="Max dollars to spend before auto-shutdown (default: 98, keeps $2 buffer)")
+    parser.add_argument("--budget", type=float, default=298.0,
+                        help="Max dollars to spend before auto-shutdown (default: 298, keeps $2 buffer)")
     parser.add_argument("--cost-per-hour", type=float, default=15.92,
                         help="Hourly cost of the droplet (default: 15.92 for 8xMI300X)")
     args = parser.parse_args()
